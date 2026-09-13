@@ -1,6 +1,9 @@
 name: CI Detective Integration Test
 
 on:
+  push:
+    paths:
+      - "tests/fixtures/ci_failure_fixture.py"
   workflow_dispatch:
 
 permissions:
@@ -13,9 +16,7 @@ jobs:
     steps:
       - name: Emit representative failure
         shell: python
-        run: |
-          print("Running CI Detective integration fixture")
-          raise TypeError("classify() missing 1 required positional argument: 'config'")
+        run: python tests/fixtures/ci_failure_fixture.py
 
   detect:
     if: ${{ failure() }}
