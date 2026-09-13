@@ -1,7 +1,6 @@
 name: CI Detective Integration Test
 
 on:
-  push:
   workflow_dispatch:
 
 permissions:
