@@ -1,0 +1,21 @@
+name: CI Detective
+description: Detect and explain common GitHub Actions CI failures without requiring an external AI service.
+author: SamoTech
+branding:
+  icon: search
+  color: blue
+
+inputs:
+  comment-on-pr:
+    description: Post the diagnosis as a PR comment when applicable.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Run CI Detective
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 "${{ github.action_path }}/src/ci_detective.py"
