@@ -138,6 +138,31 @@ def write_step_summary(report: str) -> None:
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(report)
 
+def pull_request_number() -> int | None:
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return None
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        return None
+    try:
+        with open(event_path, encoding="utf-8") as handle:
+            event = json.load(handle)
+        number = event.get("number")
+        return int(number) if number is not None else None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+def post_pr_comment(repo: str, pr_number: int, report: str) -> None:
+    marker = "<!-- ci-detective -->"
+    body = marker + "\n" + report
+    comments = gh_api(f"repos/{repo}/issues/{pr_number}/comments?per_page=100")
+    existing = next((c for c in comments if marker in c.get("body", "")), None)
+    if existing:
+        comment_id = str(existing["id"])
+        subprocess.run(["gh", "api", "--method", "PATCH", f"repos/{repo}/issues/comments/{comment_id}", "-f", f"body={body}"], check=True, capture_output=True, text=True, env=os.environ.copy())
+    else:
+        subprocess.run(["gh", "api", "--method", "POST", f"repos/{repo}/issues/{pr_number}/comments", "-f", f"body={body}"], check=True, capture_output=True, text=True, env=os.environ.copy())
+
 def main() -> int:
     repo = os.environ.get("GITHUB_REPOSITORY")
     run_id = os.environ.get("GITHUB_RUN_ID")
@@ -160,6 +185,11 @@ def main() -> int:
         report = render_markdown_report(first_job, first)
         print(report)
         write_step_summary(report)
+        if os.environ.get("CI_DETECTIVE_COMMENT_ON_PR", "true").lower() == "true":
+            pr_number = pull_request_number()
+            if pr_number is not None:
+                post_pr_comment(repo, pr_number, report)
+                print(f"CI Detective: posted diagnosis to PR #{pr_number}.")
         output_path = os.environ.get("GITHUB_OUTPUT")
         if output_path:
             payload = {"category": first.category, "confidence": first.confidence, "summary": first.summary, "history": first.history or []}
