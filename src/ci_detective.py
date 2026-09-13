@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -19,9 +20,14 @@ class Diagnosis:
     confidence: str
 
 
+def clean_logs(text: str) -> str:
+    """Normalize GitHub runner logs before deterministic analysis."""
+    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text or "")
+
+
 def classify_failure(log_text: str) -> Diagnosis:
     """Classify common CI failures using deterministic signatures."""
-    text = log_text or ""
+    text = clean_logs(log_text)
 
     patterns: list[tuple[str, str, str, str]] = [
         ("typeerror", "TYPE_ERROR", "A TypeError was detected; inspect the failing call and recent signature changes.", "high"),
@@ -73,9 +79,22 @@ def gh_api(path: str) -> Any:
 
 
 def fetch_job_logs(repo: str, run_id: str, job_id: int) -> str:
-    """Fetch a failed job's logs, with a GitHub CLI fallback."""
+    """Fetch a failed job's logs using the GitHub REST redirect endpoint."""
+    token = os.environ.get("GH_TOKEN")
+    if not token:
+        raise RuntimeError("GH_TOKEN is required")
+
+    url = f"https://api.github.com/repos/{repo}/actions/jobs/{job_id}/logs"
     direct = subprocess.run(
-        ["gh", "api", f"repos/{repo}/actions/jobs/{job_id}/logs"],
+        [
+            "curl",
+            "-fsSL",
+            "-H",
+            f"Authorization: Bearer {token}",
+            "-H",
+            "Accept: application/vnd.github+json",
+            url,
+        ],
         capture_output=True,
         text=True,
         env=os.environ.copy(),
@@ -83,8 +102,10 @@ def fetch_job_logs(repo: str, run_id: str, job_id: int) -> str:
     if direct.returncode == 0 and direct.stdout.strip():
         return direct.stdout
 
+    # Fallback for runner environments where curl is unavailable or the
+    # redirect endpoint temporarily fails.
     fallback = subprocess.run(
-        ["gh", "run", "view", run_id, "--repo", repo, "--log-failed"],
+        ["gh", "run", "view", run_id, "--repo", repo, "--log-failed", "--color", "never"],
         capture_output=True,
         text=True,
         env=os.environ.copy(),
