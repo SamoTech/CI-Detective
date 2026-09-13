@@ -7,7 +7,7 @@ branding:
 
 inputs:
   comment-on-pr:
-    description: Post the diagnosis as a PR comment when applicable.
+    description: Post the diagnosis as a PR conversation comment when applicable.
     required: false
     default: 'true'
 
@@ -18,4 +18,5 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        CI_DETECTIVE_COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
       run: python3 "${{ github.action_path }}/src/ci_detective.py"
