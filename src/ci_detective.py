@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI Detective: deterministic GitHub Actions failure analysis."""
+"""CI Detective: deterministic, evidence-first GitHub Actions failure analysis."""
 
 from __future__ import annotations
 
