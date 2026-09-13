@@ -152,8 +152,9 @@ def main() -> int:
             return 0
         diagnoses = []
         for job in failed_jobs:
-            diagnosis = classify_failure(fetch_job_logs(repo, run_id, int(job["id"])))
-            diagnosis.history = analyze_git_history(fetch_job_logs(repo, run_id, int(job["id"])))
+            logs = fetch_job_logs(repo, run_id, int(job["id"]))
+            diagnosis = classify_failure(logs)
+            diagnosis.history = analyze_git_history(logs)
             diagnoses.append((job.get("name", "unknown job"), diagnosis))
         first_job, first = diagnoses[0]
         report = render_markdown_report(first_job, first)
