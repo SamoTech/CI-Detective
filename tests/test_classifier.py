@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from ci_detective import (
     classify_failure,
     extract_failing_tests,
     extract_traceback_files,
+    post_or_update_pr_comment,
+    pull_request_number,
     render_markdown_report,
 )
 
@@ -111,3 +114,50 @@ def test_markdown_unknown_report_warns():
     report = render_markdown_report("test", classify_failure("something unusual happened"))
     assert "UNKNOWN" in report
     assert "No deterministic root cause was established" in report
+
+
+def test_pull_request_number_from_event(tmp_path, monkeypatch):
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"pull_request": {"number": 42}}), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    assert pull_request_number() == 42
+
+
+def test_pull_request_number_returns_none_without_context(tmp_path, monkeypatch):
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"workflow_run": {"id": 123}}), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    assert pull_request_number() is None
+
+
+def test_pr_comment_is_created(monkeypatch):
+    calls = []
+
+    def fake_api(path, method="GET", payload=None):
+        calls.append((path, method, payload))
+        if method == "GET":
+            return []
+        return {"id": 99}
+
+    monkeypatch.setattr("ci_detective.gh_api", fake_api)
+    result = post_or_update_pr_comment("SamoTech/CI-Detective", 42, "## report")
+    assert result == "created"
+    assert calls[-1][0] == "repos/SamoTech/CI-Detective/issues/42/comments"
+    assert "<!-- ci-detective -->" in calls[-1][2]["body"]
+
+
+def test_pr_comment_is_updated(monkeypatch):
+    calls = []
+
+    def fake_api(path, method="GET", payload=None):
+        calls.append((path, method, payload))
+        if method == "GET":
+            return [{"id": 77, "body": "<!-- ci-detective -->\nold", "user": {"type": "Bot"}}]
+        return {"id": 77}
+
+    monkeypatch.setattr("ci_detective.gh_api", fake_api)
+    result = post_or_update_pr_comment("SamoTech/CI-Detective", 42, "## new report")
+    assert result == "updated"
+    assert calls[-1][0] == "repos/SamoTech/CI-Detective/issues/comments/77"
+    assert calls[-1][1] == "PATCH"
+    assert "## new report" in calls[-1][2]["body"]
