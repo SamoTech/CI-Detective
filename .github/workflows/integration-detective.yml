@@ -2,9 +2,6 @@ name: CI Detective Integration Test
 
 on:
   push:
-    paths:
-      - "tests/fixtures/ci_failure_fixture.py"
-      - "src/ci_detective.py"
   workflow_dispatch:
 
 permissions:
