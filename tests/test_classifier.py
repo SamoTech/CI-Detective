@@ -147,3 +147,7 @@ def test_post_pr_comment_creates_comment_when_missing(monkeypatch):
     assert calls
     assert calls[0][0:4] == ["gh", "api", "--method", "POST"]
     assert "repos/SamoTech/CI-Detective/issues/42/comments" in calls[0]
+
+
+def test_end_to_end_pr_failure_probe():
+    assert False, "CI Detective PR comment integration probe"
