@@ -14,8 +14,9 @@ jobs:
   intentional-failure:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Emit representative failure
-        shell: python
+        shell: bash
         run: python tests/fixtures/ci_failure_fixture.py
 
   detect:
