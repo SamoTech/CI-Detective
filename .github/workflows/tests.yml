@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  issues: write
 
 jobs:
   test:
@@ -19,3 +21,19 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Run tests
         run: python -m pytest -q
+
+  detect:
+    name: CI Detective
+    if: ${{ failure() }}
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run CI Detective
+        uses: ./
+        with:
+          comment-on-pr: 'true'
