@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
 """Intentional CI failure used only by the integration workflow."""
 
-print("Running CI Detective integration fixture v3")
+print("Running CI Detective integration fixture v4")
 raise TypeError("classify() missing 1 required positional argument: 'config'")
