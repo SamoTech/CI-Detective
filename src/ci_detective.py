@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """CI Detective: deterministic, evidence-first GitHub Actions failure analysis."""
 from __future__ import annotations
-import json
-import os
-import re
-import subprocess
-import sys
+import json, os, re, subprocess, sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -79,16 +75,13 @@ def extract_traceback_files(log_text: str) -> list[str]:
 def classify_failure(log_text: str) -> Diagnosis:
     text = clean_logs(log_text)
     lowered = text.lower()
-    tests = extract_failing_tests(text)
-    errors = extract_error_lines(text)
-    files = extract_traceback_files(text)
+    tests, errors, files = extract_failing_tests(text), extract_error_lines(text), extract_traceback_files(text)
     for needle, category, summary, confidence in PATTERNS:
         if needle in lowered:
             evidence = (["Failing test: " + tests[0]] if tests else []) + errors[:4]
             if not evidence:
                 for line in text.splitlines():
-                    if needle in line.lower():
-                        evidence.append(line.strip()[:500]); break
+                    if needle in line.lower(): evidence.append(line.strip()[:500]); break
             return Diagnosis(category, summary, list(dict.fromkeys(evidence)), confidence, tests, files, errors)
     if re.search(r"(?:^|\s)(?:FAILED|FAILURES|failed tests?|test suites? failed)\b", text, re.I):
         evidence = (["Failing test: " + tests[0]] if tests else []) + errors[:4]
@@ -96,8 +89,7 @@ def classify_failure(log_text: str) -> Diagnosis:
     return Diagnosis("UNKNOWN", "The failure could not be classified by the current deterministic rules.", errors[:4], "low", tests, files, errors)
 
 def gh_api(path: str) -> Any:
-    if not os.environ.get("GH_TOKEN"):
-        raise RuntimeError("GH_TOKEN is required")
+    if not os.environ.get("GH_TOKEN"): raise RuntimeError("GH_TOKEN is required")
     result = subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True, env=os.environ.copy())
     return json.loads(result.stdout)
 
@@ -117,52 +109,35 @@ def analyze_git_history(log_text: str) -> list[str]:
         matching = _matching(changed, implicated)
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
-    evidence: list[str] = []
-    for path in matching[:3]:
-        evidence.append(f"Failure traceback references {path}, which changed in HEAD.")
-    if changed and implicated and not matching:
-        evidence.append("The failure has a source traceback, but none of its files changed in HEAD.")
-    if changed:
-        evidence.append("HEAD changed: " + ", ".join(changed[:10]))
+    evidence: list[str] = [f"Failure traceback references {p}, which changed in HEAD." for p in matching[:3]]
+    if changed and implicated and not matching: evidence.append("The failure has a source traceback, but none of its files changed in HEAD.")
+    if changed: evidence.append("HEAD changed: " + ", ".join(changed[:10]))
     subject = git_command("log", "-1", "--format=%s", head).strip()
-    if subject:
-        evidence.append(f"Current commit {head[:7]}: {subject}")
-    if matching:
-        evidence.append(f"Likely regression candidate: current commit {head[:7]} changed an implicated source file.")
+    if subject: evidence.append(f"Current commit {head[:7]}: {subject}")
+    if matching: evidence.append(f"Likely regression candidate: current commit {head[:7]} changed an implicated source file.")
     return evidence
 
 def analyze_remote_commit(repo: str, sha: str, implicated: list[str]) -> list[str]:
-    if not repo or not sha or not implicated:
-        return []
-    try:
-        commit = gh_api(f"repos/{repo}/commits/{sha}")
-    except Exception:
-        return []
+    if not repo or not sha or not implicated: return []
+    try: commit = gh_api(f"repos/{repo}/commits/{sha}")
+    except Exception: return []
     changed = [f.get("filename", "") for f in commit.get("files", []) if f.get("filename")]
     matching = _matching(changed, implicated)
-    evidence = [f"Failure traceback references {p}, which changed in the failing commit."] for p in matching[:3]
-    evidence = [*evidence]
-    if changed:
-        evidence.append("Failing commit changed: " + ", ".join(changed[:10]))
+    evidence = [f"Failure traceback references {p}, which changed in the failing commit." for p in matching[:3]]
+    if changed: evidence.append("Failing commit changed: " + ", ".join(changed[:10]))
     message = commit.get("commit", {}).get("message", "").splitlines()[0]
-    if message:
-        evidence.append(f"Failing commit {sha[:7]}: {message}")
-    if matching:
-        evidence.append(f"Likely regression candidate: failing commit {sha[:7]} changed an implicated source file.")
+    if message: evidence.append(f"Failing commit {sha[:7]}: {message}")
+    if matching: evidence.append(f"Likely regression candidate: failing commit {sha[:7]} changed an implicated source file.")
     return evidence
 
 def fetch_job_logs(repo: str, run_id: str, job_id: int) -> str:
     token = os.environ.get("GH_TOKEN")
-    if not token:
-        raise RuntimeError("GH_TOKEN is required")
+    if not token: raise RuntimeError("GH_TOKEN is required")
     url = f"https://api.github.com/repos/{repo}/actions/jobs/{job_id}/logs"
     direct = subprocess.run(["curl", "-fsSL", "-H", f"Authorization: Bearer {token}", "-H", "Accept: application/vnd.github+json", url], capture_output=True, text=True, env=os.environ.copy())
-    if direct.returncode == 0 and direct.stdout.strip():
-        return direct.stdout
+    if direct.returncode == 0 and direct.stdout.strip(): return direct.stdout
     fallback = subprocess.run(["gh", "run", "view", run_id, "--repo", repo, "--log-failed", "--color", "never"], capture_output=True, text=True, env=os.environ.copy())
-    if fallback.returncode == 0:
-        return fallback.stdout
-    return ""
+    return fallback.stdout if fallback.returncode == 0 else ""
 
 def render_markdown_report(job_name: str, diagnosis: Diagnosis) -> str:
     lines = ["## CI Detective — Failure Diagnosis", "", f"**Job:** `{job_name}`  ", f"**Category:** `{diagnosis.category}`  ", f"**Confidence:** **{diagnosis.confidence.upper()}**", "", "### Diagnosis", diagnosis.summary]
@@ -171,10 +146,8 @@ def render_markdown_report(job_name: str, diagnosis: Diagnosis) -> str:
     if diagnosis.evidence: lines += ["", "### Evidence"] + [f"- `{x}`" for x in diagnosis.evidence[:6]]
     if diagnosis.history: lines += ["", "### Git History"] + [f"- {x}" for x in diagnosis.history[:6]]
     combined = diagnosis.history + diagnosis.evidence
-    if any("Likely regression candidate" in x for x in combined):
-        lines += ["", "### Assessment", "**Likely regression detected:** the failing commit modified a source file implicated by the failure traceback."]
-    elif diagnosis.category == "UNKNOWN":
-        lines += ["", "### Assessment", "No deterministic root cause was established. Treat this result as a triage signal, not a definitive diagnosis."]
+    if any("Likely regression candidate" in x for x in combined): lines += ["", "### Assessment", "**Likely regression detected:** the failing commit modified a source file implicated by the failure traceback."]
+    elif diagnosis.category == "UNKNOWN": lines += ["", "### Assessment", "No deterministic root cause was established. Treat this result as a triage signal, not a definitive diagnosis."]
     lines += ["", "---", "Generated by CI Detective — deterministic analysis; no external AI required."]
     return "\n".join(lines) + "\n"
 
@@ -185,20 +158,17 @@ def write_step_summary(report: str) -> None:
 
 def main() -> int:
     repo, run_id = os.environ.get("GITHUB_REPOSITORY"), os.environ.get("GITHUB_RUN_ID")
-    if not repo or not run_id:
-        print("CI Detective: GitHub Actions environment not detected."); return 0
+    if not repo or not run_id: print("CI Detective: GitHub Actions environment not detected."); return 0
     try:
         jobs = gh_api(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100")
         failed = [j for j in jobs.get("jobs", []) if j.get("conclusion") == "failure"]
-        if not failed:
-            print("CI Detective: no failed jobs found."); return 0
+        if not failed: print("CI Detective: no failed jobs found."); return 0
         diagnoses = []
         sha = os.environ.get("GITHUB_SHA", "")
         for job in failed:
             logs = fetch_job_logs(repo, run_id, int(job["id"]))
             diagnosis = classify_failure(logs)
-            diagnosis.history = analyze_git_history(logs)
-            if not diagnosis.history: diagnosis.history = analyze_remote_commit(repo, sha, diagnosis.traceback_files)
+            diagnosis.history = analyze_git_history(logs) or analyze_remote_commit(repo, sha, diagnosis.traceback_files)
             diagnoses.append((job.get("name", "unknown job"), diagnosis))
         name, diagnosis = diagnoses[0]
         report = render_markdown_report(name, diagnosis)
@@ -206,8 +176,7 @@ def main() -> int:
         output_path = os.environ.get("GITHUB_OUTPUT")
         if output_path:
             payload = {"category": diagnosis.category, "confidence": diagnosis.confidence, "summary": diagnosis.summary, "failing_tests": diagnosis.failing_tests, "traceback_files": diagnosis.traceback_files, "history": diagnosis.history}
-            with open(output_path, "a", encoding="utf-8") as f:
-                f.write(f"diagnosis={json.dumps(payload, separators=(',', ':'))}\nconfidence={diagnosis.confidence}\n")
+            with open(output_path, "a", encoding="utf-8") as f: f.write(f"diagnosis={json.dumps(payload, separators=(',', ':'))}\nconfidence={diagnosis.confidence}\n")
         return 0
     except Exception as exc:
         print(f"CI Detective error: {exc}", file=sys.stderr); return 1
