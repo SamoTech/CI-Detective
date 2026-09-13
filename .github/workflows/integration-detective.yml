@@ -1,0 +1,27 @@
+name: CI Detective Integration Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  intentional-failure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Emit representative failure
+        shell: python
+        run: |
+          print("Running CI Detective integration fixture")
+          raise TypeError("classify() missing 1 required positional argument: 'config'")
+
+  detect:
+    if: ${{ failure() }}
+    needs: intentional-failure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run CI Detective against failed jobs
+        uses: ./
