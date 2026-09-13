@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from ci_detective import analyze_git_history, classify_failure, extract_traceback_files
+from ci_detective import analyze_git_history, classify_failure, extract_traceback_files, render_markdown_report
 
 
 def test_type_error_is_classified():
@@ -40,9 +40,7 @@ def test_history_identifies_changed_traceback_file(monkeypatch):
         return responses[args]
 
     monkeypatch.setattr("ci_detective.git_command", fake_git_command)
-    evidence = analyze_git_history(
-        'File "src/generator.py", line 42, in classify\nTypeError: missing config'
-    )
+    evidence = analyze_git_history('File "src/generator.py", line 42, in classify\nTypeError: missing config')
 
     assert any("src/generator.py" in item and "changed in HEAD" in item for item in evidence)
     assert any("Likely regression candidate" in item for item in evidence)
@@ -60,9 +58,28 @@ def test_history_does_not_blame_unrelated_change(monkeypatch):
         return responses[args]
 
     monkeypatch.setattr("ci_detective.git_command", fake_git_command)
-    evidence = analyze_git_history(
-        'File "src/generator.py", line 42, in classify\nTypeError: missing config'
-    )
+    evidence = analyze_git_history('File "src/generator.py", line 42, in classify\nTypeError: missing config')
 
     assert not any("Likely regression candidate" in item for item in evidence)
     assert any("none of its files changed in HEAD" in item for item in evidence)
+
+
+def test_markdown_report_contains_diagnosis_and_evidence():
+    diagnosis = classify_failure("TypeError: classify() missing config")
+    diagnosis.history = [
+        "Failure traceback references src/generator.py, which changed in HEAD.",
+        "Current commit abc1234: refactor generator",
+        "Likely regression candidate: current commit abc1234 changed an implicated source file.",
+    ]
+    report = render_markdown_report("test", diagnosis)
+    assert "CI Detective — Failure Diagnosis" in report
+    assert "TYPE_ERROR" in report
+    assert "HIGH" in report
+    assert "src/generator.py" in report
+    assert "Likely regression detected" in report
+
+
+def test_markdown_unknown_report_warns():
+    report = render_markdown_report("test", classify_failure("something unusual happened"))
+    assert "UNKNOWN" in report
+    assert "No deterministic root cause was established" in report
