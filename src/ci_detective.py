@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -25,7 +24,6 @@ def classify_failure(log_text: str) -> Diagnosis:
     text = log_text or ""
 
     patterns: list[tuple[str, str, str, str]] = [
-        ("test", "TEST_FAILURE", "A test failure was detected.", "high"),
         ("typeerror", "TYPE_ERROR", "A TypeError was detected; inspect the failing call and recent signature changes.", "high"),
         ("assertionerror", "ASSERTION_FAILURE", "An assertion failed; inspect the expected and actual values.", "high"),
         ("modulenotfounderror", "IMPORT_FAILURE", "A Python module import failed; inspect dependencies and import paths.", "high"),
@@ -35,6 +33,7 @@ def classify_failure(log_text: str) -> Diagnosis:
         ("permission denied", "PERMISSION_FAILURE", "A command or file operation was denied by the runner environment.", "high"),
         ("out of memory", "RESOURCE_FAILURE", "The job appears to have exhausted available memory.", "medium"),
         ("timed out", "TIMEOUT", "The job appears to have exceeded a timeout.", "medium"),
+        ("test", "TEST_FAILURE", "A test failure was detected.", "high"),
     ]
 
     lowered = text.lower()
@@ -42,7 +41,8 @@ def classify_failure(log_text: str) -> Diagnosis:
     for needle, category, summary, confidence in patterns:
         if needle in lowered:
             for line in text.splitlines():
-                if needle in line.lower() or (needle == "test" and ("failed" in line.lower() or "failure" in line.lower())):
+                line_lower = line.lower()
+                if needle in line_lower or (needle == "test" and ("failed" in line_lower or "failure" in line_lower)):
                     cleaned = line.strip()
                     if cleaned and cleaned not in evidence:
                         evidence.append(cleaned[:500])
@@ -72,6 +72,34 @@ def gh_api(path: str) -> Any:
     return json.loads(result.stdout)
 
 
+def fetch_job_logs(repo: str, run_id: str, job_id: int) -> str:
+    """Fetch a failed job's logs, with a GitHub CLI fallback."""
+    direct = subprocess.run(
+        ["gh", "api", f"repos/{repo}/actions/jobs/{job_id}/logs"],
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    if direct.returncode == 0 and direct.stdout.strip():
+        return direct.stdout
+
+    fallback = subprocess.run(
+        ["gh", "run", "view", run_id, "--repo", repo, "--log-failed"],
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    if fallback.returncode == 0:
+        return fallback.stdout
+
+    print(
+        f"CI Detective: unable to retrieve logs for job {job_id}: "
+        f"{direct.stderr.strip() or fallback.stderr.strip() or 'unknown error'}",
+        file=sys.stderr,
+    )
+    return ""
+
+
 def main() -> int:
     repo = os.environ.get("GITHUB_REPOSITORY")
     run_id = os.environ.get("GITHUB_RUN_ID")
@@ -88,16 +116,7 @@ def main() -> int:
 
         diagnoses: list[Diagnosis] = []
         for job in failed_jobs:
-            try:
-                logs = subprocess.run(
-                    ["gh", "api", f"repos/{repo}/actions/jobs/{job['id']}/logs"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    env=os.environ.copy(),
-                ).stdout
-            except subprocess.CalledProcessError:
-                logs = ""
+            logs = fetch_job_logs(repo, run_id, int(job["id"]))
             diagnosis = classify_failure(logs)
             diagnoses.append(diagnosis)
             print(f"CI Detective: {job.get('name', 'unknown job')} -> {diagnosis.category}")
@@ -105,7 +124,6 @@ def main() -> int:
             for item in diagnosis.evidence:
                 print(f"  evidence: {item}")
 
-        # Expose a compact machine-readable result for downstream workflow steps.
         output = {
             "category": diagnoses[0].category,
             "confidence": diagnoses[0].confidence,
