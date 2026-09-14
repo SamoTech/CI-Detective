@@ -100,6 +100,23 @@ def gh_api(path: str, method: str = "GET", payload: dict[str,Any]|None = None) -
     result=subprocess.run(command,input=json.dumps(payload) if payload is not None else None,check=True,capture_output=True,text=True,env=os.environ.copy())
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
+def github_comment_api(path: str, method: str = "GET", payload: dict[str,Any]|None = None) -> Any:
+    """Call the GitHub REST API directly for PR issue comments.
+
+    This intentionally avoids relying on gh's stdin payload handling in Actions,
+    which can fail without exposing the underlying HTTP response.
+    """
+    token=os.environ.get("GH_TOKEN")
+    if not token: raise RuntimeError("GH_TOKEN is required")
+    url="https://api.github.com/"+path.lstrip("/")
+    data=json.dumps(payload,separators=(",",":"),ensure_ascii=False).encode("utf-8") if payload is not None else None
+    command=["curl","-fsSL","-X",method,"-H",f"Authorization: Bearer {token}","-H","Accept: application/vnd.github+json","-H","X-GitHub-Api-Version: 2022-11-28"]
+    if data is not None:
+        command += ["-H","Content-Type: application/json","--data-binary",data.decode("utf-8")]
+    command.append(url)
+    result=subprocess.run(command,check=True,capture_output=True,text=True,env=os.environ.copy())
+    return json.loads(result.stdout) if result.stdout.strip() else {}
+
 def git_command(*args: str) -> str:
     return subprocess.run(["git",*args],check=True,capture_output=True,text=True,env=os.environ.copy()).stdout
 
@@ -172,11 +189,11 @@ def pull_request_number()->int|None:
 
 def post_or_update_pr_comment(repo:str,pr_number:int,report:str)->str:
     marker="<!-- ci-detective -->"; body=marker+"\n"+report
-    comments=gh_api(f"repos/{repo}/issues/{pr_number}/comments?per_page=100")
+    comments=github_comment_api(f"repos/{repo}/issues/{pr_number}/comments?per_page=100")
     existing=next((c for c in comments if marker in c.get("body","") and c.get("user",{}).get("type")=="Bot"),None)
     if existing:
-        gh_api(f"repos/{repo}/issues/comments/{existing['id']}","PATCH",{"body":body}); return "updated"
-    gh_api(f"repos/{repo}/issues/{pr_number}/comments","POST",{"body":body}); return "created"
+        github_comment_api(f"repos/{repo}/issues/comments/{existing['id']}","PATCH",{"body":body}); return "updated"
+    github_comment_api(f"repos/{repo}/issues/{pr_number}/comments","POST",{"body":body}); return "created"
 
 def main()->int:
     repo,run_id=os.environ.get("GITHUB_REPOSITORY"),os.environ.get("GITHUB_RUN_ID")
@@ -193,7 +210,11 @@ def main()->int:
         name,diagnosis=diagnoses[0]; report=render_markdown_report(name,diagnosis); print(report); write_step_summary(report)
         if os.environ.get("INPUT_COMMENT_ON_PR","true").lower()=="true":
             pr_number=pull_request_number()
-            if pr_number: print(f"CI Detective: PR comment {post_or_update_pr_comment(repo,pr_number,report)}.")
+            if pr_number:
+                try:
+                    print(f"CI Detective: PR comment {post_or_update_pr_comment(repo,pr_number,report)}.")
+                except Exception as exc:
+                    print(f"CI Detective warning: PR comment delivery failed: {exc}",file=sys.stderr)
             else: print("CI Detective: no pull request context; skipping PR comment.")
         output_path=os.environ.get("GITHUB_OUTPUT")
         if output_path:
