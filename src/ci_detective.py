@@ -70,8 +70,7 @@ def infer_root_cause(text: str, category: str) -> tuple[str,str,str]:
         if m: return (f"The assertion failed because {m.group(1).strip()[:300]}","","high")
     if category == "IMPORT_FAILURE":
         m=re.search(r"No module named\s+['\"]([^'\"]+)['\"]",text,re.I)
-        if not m:
-            m=re.search(r"Cannot find module\s+['\"]([^'\"]+)['\"]",text,re.I)
+        if not m: m=re.search(r"Cannot find module\s+['\"]([^'\"]+)['\"]",text,re.I)
         if m: return (f"The runtime cannot resolve dependency/module '{m.group(1)}'.",m.group(1),"high")
     return ("The available evidence identifies the failure class, but not a unique root cause.","","low")
 
@@ -81,8 +80,7 @@ def classify_failure(log_text: str) -> Diagnosis:
     for needle,category,summary,confidence in PATTERNS:
         if needle in lowered:
             evidence=(["Failing test: "+tests[0]] if tests else [])+errors[:4]
-            if not evidence:
-                evidence=[line.strip()[:500] for line in text.splitlines() if needle in line.lower()][:1]
+            if not evidence: evidence=[line.strip()[:500] for line in text.splitlines() if needle in line.lower()][:1]
             root,symbol,root_conf=infer_root_cause(text,category)
             if root_conf=="high": summary=root; confidence="high"
             return Diagnosis(category,summary,list(dict.fromkeys(evidence)),confidence,tests,files,errors,[],root,symbol)
@@ -107,8 +105,7 @@ def github_comment_api(path: str, method: str = "GET", payload: dict[str,Any]|No
     url="https://api.github.com/"+path.lstrip("/")
     data=json.dumps(payload,separators=(",",":"),ensure_ascii=False).encode("utf-8") if payload is not None else None
     command=["curl","-fsSL","-X",method,"-H",f"Authorization: Bearer {token}","-H","Accept: application/vnd.github+json","-H","X-GitHub-Api-Version: 2022-11-28"]
-    if data is not None:
-        command += ["-H","Content-Type: application/json","--data-binary",data.decode("utf-8")]
+    if data is not None: command += ["-H","Content-Type: application/json","--data-binary",data.decode("utf-8")]
     command.append(url)
     result=subprocess.run(command,check=True,capture_output=True,text=True,env=os.environ.copy())
     return json.loads(result.stdout) if result.stdout.strip() else {}
@@ -133,11 +130,30 @@ def analyze_git_history(log_text:str)->list[str]:
     if matching: evidence.append(f"Likely regression candidate: current commit {head[:7]} changed an implicated source file.")
     return evidence
 
+def fetch_all_commit_files(repo:str,sha:str)->list[dict[str,Any]]:
+    """Fetch every page of a commit's changed files, preserving GitHub pagination."""
+    pages=gh_api(f"repos/{repo}/commits/{sha}?per_page=100", method="GET")
+    if not isinstance(pages,dict): return []
+    files=list(pages.get("files",[]) or [])
+    # The commit endpoint may paginate the file list. gh api --paginate --slurp
+    # is used only when the first response advertises a full page.
+    if len(files) < 100: return files
+    if not os.environ.get("GH_TOKEN"): raise RuntimeError("GH_TOKEN is required")
+    command=["gh","api","--paginate","--slurp",f"repos/{repo}/commits/{sha}?per_page=100"]
+    result=subprocess.run(command,check=True,capture_output=True,text=True,env=os.environ.copy())
+    payload=json.loads(result.stdout) if result.stdout.strip() else []
+    all_files=[]
+    for page in payload if isinstance(payload,list) else []:
+        if isinstance(page,dict): all_files.extend(page.get("files",[]) or [])
+    return all_files or files
+
 def analyze_remote_commit(repo:str,sha:str,implicated:list[str])->list[str]:
     if not repo or not sha or not implicated:return []
-    try: commit=gh_api(f"repos/{repo}/commits/{sha}")
+    try:
+        commit=gh_api(f"repos/{repo}/commits/{sha}")
+        changed_files=fetch_all_commit_files(repo,sha)
     except Exception:return []
-    changed=[f.get("filename","") for f in commit.get("files",[]) if f.get("filename")]; matching=_matching(changed,implicated)
+    changed=[f.get("filename","") for f in changed_files if f.get("filename")]; matching=_matching(changed,implicated)
     evidence=[f"Failure traceback references {p}, which changed in the failing commit." for p in matching[:3]]
     if changed:evidence.append("Failing commit changed: "+", ".join(changed[:10]))
     message=commit.get("commit",{}).get("message","").splitlines()[0]
@@ -157,8 +173,7 @@ def fetch_job_logs(repo:str,run_id:str,job_id:int)->str:
         if not job: return ""
         fallback=subprocess.run(["gh","run","view",run_id,"--repo",repo,"--job",str(job_id),"--log","--color","never"],capture_output=True,text=True,env=os.environ.copy())
         return fallback.stdout if fallback.returncode==0 else ""
-    except (subprocess.CalledProcessError,TypeError,ValueError):
-        return ""
+    except (subprocess.CalledProcessError,TypeError,ValueError): return ""
 
 def render_markdown_report(job_name:str,diagnosis:Diagnosis)->str:
     lines=["## CI Detective — Failure Diagnosis","",f"**Job:** `{job_name}`  ",f"**Category:** `{diagnosis.category}`  ",f"**Confidence:** **{diagnosis.confidence.upper()}**","","### Diagnosis",diagnosis.summary]
