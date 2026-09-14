@@ -8,7 +8,7 @@ on:
 
 env:
   TARGET_REPO: SamoTech/RepoSource-Registry
-  LOOKBACK_MINUTES: '120'
+  LOOKBACK_MINUTES: '360'
   MAX_FAILED_JOBS: '8'
 
 jobs:
