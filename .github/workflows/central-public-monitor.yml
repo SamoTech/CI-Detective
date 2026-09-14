@@ -2,6 +2,7 @@ name: CI Detective Central Public Monitor
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     branches:
       - feat/central-public-monitor-poc
