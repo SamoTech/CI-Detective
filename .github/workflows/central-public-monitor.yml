@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: '*/15 * * * *'
 
+env:
+  TARGET_REPO: SamoTech/RepoSource-Registry
+  LOOKBACK_MINUTES: '120'
+  MAX_FAILED_JOBS: '8'
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
@@ -15,7 +20,6 @@ jobs:
     env:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       GH_TOKEN: ${{ github.token }}
-      TARGET_REPO: SamoTech/RepoSource-Registry
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,33 +28,103 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${TARGET_REPO}/actions/runs?status=failure&per_page=5" > runs.json
-          run_id="$(jq -r '.workflow_runs[0].id // empty' runs.json)"
-          test -n "$run_id"
-          gh api "repos/${TARGET_REPO}/actions/runs/${run_id}/jobs?per_page=100" > jobs.json
+          gh api "repos/${TARGET_REPO}/actions/runs?status=failure&per_page=20" > runs.json
           python3 - <<'PY'
           import json, os, subprocess
+          from datetime import datetime, timedelta, timezone
           from pathlib import Path
           from src.ci_detective import classify_failure
-          repo=os.environ['TARGET_REPO']
-          run=json.loads(Path('runs.json').read_text())['workflow_runs'][0]
-          jobs=json.loads(Path('jobs.json').read_text())['jobs']
-          out=['## CI Detective — Central Public Repository Report','',f"**Repository:** `{repo}`  ",f"**Run:** [{run['id']}]({run['html_url']})  ",f"**Commit:** `{run.get('head_sha','')}`",'']
-          all_items=[]
-          for job in jobs:
-              if job.get('conclusion')!='failure': continue
-              r=subprocess.run(['gh','api',f"repos/{repo}/actions/jobs/{job['id']}/logs"],capture_output=True,text=True,timeout=60)
-              d=classify_failure(r.stdout if r.returncode==0 else '')
-              item={'job':job.get('name','unknown'),'job_id':job['id'],'category':d.category,'summary':d.summary,'confidence':d.confidence,'evidence':d.evidence,'failing_tests':d.failing_tests,'traceback_files':d.traceback_files}
+
+          repo = os.environ['TARGET_REPO']
+          lookback = int(os.environ.get('LOOKBACK_MINUTES', '120'))
+          max_failed_jobs = int(os.environ.get('MAX_FAILED_JOBS', '8'))
+          runs = json.loads(Path('runs.json').read_text()).get('workflow_runs', [])
+          cutoff = datetime.now(timezone.utc) - timedelta(minutes=lookback)
+
+          def parse_time(value):
+              if not value:
+                  return None
+              return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+          recent = [r for r in runs if parse_time(r.get('updated_at') or r.get('created_at')) and parse_time(r.get('updated_at') or r.get('created_at')) >= cutoff]
+          if not recent:
+              Path('report.md').write_text(
+                  '## CI Detective — Central Public Repository Report\n\n'
+                  f'**Repository:** `{repo}`  \n**Window:** last {lookback} minutes  \n\n'
+                  'No failed workflow run was found in the configured monitoring window.\n',
+                  encoding='utf-8',
+              )
+              Path('ai-context.json').write_text(json.dumps({'schema_version':'1.0','repository':repo,'failed_jobs':[]}), encoding='utf-8')
+              Path('recent-failure').write_text('false', encoding='utf-8')
+              raise SystemExit(0)
+
+          run = recent[0]
+          jobs = json.loads(subprocess.check_output([
+              'gh', 'api', f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100"
+          ], text=True)).get('jobs', [])
+          out = [
+              '## CI Detective — Central Public Repository Report', '',
+              f"**Repository:** `{repo}`  ",
+              f"**Run:** [{run['id']}]({run['html_url']})  ",
+              f"**Commit:** `{run.get('head_sha','')}`  ",
+              f"**Monitoring window:** last {lookback} minutes", ''
+          ]
+          all_items = []
+          failed_jobs = [j for j in jobs if j.get('conclusion') == 'failure'][:max_failed_jobs]
+          for job in failed_jobs:
+              try:
+                  log_result = subprocess.run(
+                      ['gh', 'run', 'view', str(run['id']), '--job', str(job['id']), '--log'],
+                      capture_output=True, text=True, timeout=90, check=False,
+                  )
+                  log_text = log_result.stdout if log_result.returncode == 0 else ''
+              except subprocess.TimeoutExpired:
+                  log_text = ''
+              d = classify_failure(log_text)
+              item = {
+                  'job': job.get('name', 'unknown'),
+                  'job_id': job['id'],
+                  'category': d.category,
+                  'summary': d.summary,
+                  'confidence': d.confidence,
+                  'evidence': d.evidence,
+                  'failing_tests': d.failing_tests,
+                  'traceback_files': d.traceback_files,
+                  'logs_captured': bool(log_text.strip()),
+              }
               all_items.append(item)
-              out += [f"### Failed Job: `{item['job']}`",'',f"**Category:** `{d.category}`  ",f"**Confidence:** **{d.confidence.upper()}**",'',d.summary]
-              if d.evidence: out += ['', '#### Evidence']+[f'- {x}' for x in d.evidence]
-          payload={'schema_version':'1.0','repository':repo,'workflow_run_id':run['id'],'workflow_run_url':run['html_url'],'commit':run.get('head_sha',''),'failed_jobs':all_items}
-          Path('report.md').write_text('\n'.join(out)+"\n\n```json\n"+json.dumps(payload,indent=2)+"\n```\n",encoding='utf-8')
-          Path('ai-context.json').write_text(json.dumps(payload,separators=(',',':')),encoding='utf-8')
+              out += [
+                  f"### Failed Job: `{item['job']}`", '',
+                  f"**Category:** `{d.category}`  ",
+                  f"**Confidence:** **{d.confidence.upper()}**  ",
+                  f"**Logs captured:** **{'YES' if log_text.strip() else 'NO'}**", '',
+                  d.summary,
+              ]
+              if d.evidence:
+                  out += ['', '#### Evidence'] + [f'- {x}' for x in d.evidence]
+              if d.failing_tests:
+                  out += ['', '#### Failing Tests'] + [f'- {x}' for x in d.failing_tests]
+              if d.traceback_files:
+                  out += ['', '#### Traceback Files'] + [f'- {x}' for x in d.traceback_files]
+
+          payload = {
+              'schema_version': '1.0',
+              'repository': repo,
+              'workflow_run_id': run['id'],
+              'workflow_run_url': run['html_url'],
+              'commit': run.get('head_sha', ''),
+              'lookback_minutes': lookback,
+              'failed_jobs': all_items,
+          }
+          Path('report.md').write_text(
+              '\n'.join(out) + '\n\n```json\n' + json.dumps(payload, indent=2) + '\n```\n',
+              encoding='utf-8',
+          )
+          Path('ai-context.json').write_text(json.dumps(payload, separators=(',', ':')), encoding='utf-8')
+          Path('recent-failure').write_text('true', encoding='utf-8')
           PY
       - name: NVIDIA enhanced analysis
-        if: ${{ env.NVIDIA_API_KEY != '' }}
+        if: ${{ env.NVIDIA_API_KEY != '' && hashFiles('recent-failure') != '' }}
         env:
           CI_DETECTIVE_AI_CONTEXT: ${{ github.workspace }}/ai-context.json
           CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/report.md
