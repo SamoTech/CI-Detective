@@ -161,3 +161,8 @@ def test_pr_comment_is_updated(monkeypatch):
     assert calls[-1][0] == "repos/SamoTech/CI-Detective/issues/comments/77"
     assert calls[-1][1] == "PATCH"
     assert "## new report" in calls[-1][2]["body"]
+
+
+def test_e2e_intentional_failure_for_ci_detective():
+    """Intentional failure used only to validate CI Detective's failure path."""
+    assert False, "CI Detective E2E validation: intentional test failure"
