@@ -12,9 +12,6 @@ from typing import Any
 BASE_URL = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").rstrip("/")
 TIMEOUT = int(os.environ.get("NVIDIA_TIMEOUT", "45"))
 
-# Free NVIDIA API Catalog models relevant to CI/code diagnosis. The live /models
-# response is always authoritative for availability; this list only expresses
-# capability and free-tier eligibility known from the public catalog.
 FREE_CODE_MODELS = [
     ("deepseek-v4-pro-0813", 100, "coding, reasoning, agentic, long-context"),
     ("deepseek-v4-flash-0731", 95, "coding, reasoning, agentic, long-context, fast"),
@@ -89,11 +86,8 @@ def choose_models(models: list[str], context: str) -> list[tuple[str, int, str]]
     if not ranked:
         return []
     complexity = _complexity_score(context)
-    # Prefer the strongest long-context reasoning models for complex reports;
-    # prefer the fast model for short/simple failures. Backup always remains
-    # another live model from the same NVIDIA API.
     def key(item: tuple[str, int, str]) -> tuple[int, int]:
-        name, score, reason = item
+        _name, score, reason = item
         long_ctx = int("long-context" in reason)
         fast = int("fast" in reason)
         if complexity >= 20:
@@ -125,15 +119,15 @@ def analyse_with_fallback(context: str) -> dict[str, Any]:
     choices = choose_models(live, context)
     if not choices:
         raise RuntimeError("No supported free NVIDIA coding/reasoning model is currently available to this API key")
-
     system = (
-        "You are the optional AI analysis layer for CI Detective. "
-        "The deterministic analyzer is authoritative. Analyze only the supplied evidence. "
-        "Do not invent files, tests, commits, causes, or fixes. Never claim causation when evidence only shows correlation. "
-        "Return strict JSON with keys: summary, root_cause_hypotheses, confidence, evidence_refs, "
-        "recommended_next_checks, warnings. confidence must be low, medium, or high."
+        "You are the optional AI analysis layer for CI Detective. The deterministic analyzer is authoritative. "
+        "Analyze only the supplied deterministic report and evidence. Never invent files, tests, commits, causes, or fixes. "
+        "A changed file is correlation, not causation. If exact evidence is missing, explicitly say it is missing instead of guessing. "
+        "Every hypothesis must be traceable to a supplied evidence item. Prefer a small number of evidence-backed hypotheses. "
+        "Return strict JSON with keys: summary, root_cause_hypotheses, confidence, evidence_refs, recommended_next_checks, warnings. "
+        "confidence must be low, medium, or high."
     )
-    user = "CI Detective evidence:\n" + context[:50000]
+    user = "CI Detective deterministic evidence:\n" + context[:50000]
     errors: list[str] = []
     for index, (model, _score, reason) in enumerate(choices[:6]):
         payload = {
@@ -157,7 +151,6 @@ def analyse_with_fallback(context: str) -> dict[str, Any]:
             return parsed
         except Exception as exc:
             errors.append(f"{model}: {type(exc).__name__}")
-
     raise RuntimeError("All available NVIDIA free-model attempts failed: " + "; ".join(errors))
 
 
@@ -185,19 +178,26 @@ def render_ai_report(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _context_from_environment() -> str:
+    explicit = os.environ.get("CI_DETECTIVE_AI_CONTEXT", "")
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    summary = ""
+    if summary_path:
+        try:
+            with open(summary_path, encoding="utf-8") as handle:
+                summary = handle.read()
+        except OSError:
+            pass
+    if explicit and summary:
+        return explicit + "\n\nFull deterministic report:\n" + summary
+    return explicit or summary
+
+
 def main() -> int:
     if not os.environ.get("NVIDIA_API_KEY"):
         print("CI Detective: NVIDIA AI disabled; NVIDIA_API_KEY is not configured.")
         return 0
-    context = os.environ.get("CI_DETECTIVE_AI_CONTEXT", "")
-    if not context:
-        summary = os.environ.get("GITHUB_STEP_SUMMARY")
-        if summary:
-            try:
-                with open(summary, encoding="utf-8") as handle:
-                    context = handle.read()
-            except OSError:
-                pass
+    context = _context_from_environment()
     if not context:
         print("CI Detective: NVIDIA AI skipped; no deterministic evidence context available.")
         return 0
