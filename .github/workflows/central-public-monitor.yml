@@ -50,17 +50,25 @@ jobs:
               return datetime.fromisoformat(value.replace('Z', '+00:00'))
 
           def fetch_job_log(repo_name, job_id):
-              url = f'https://api.github.com/repos/{repo_name}/actions/jobs/{job_id}/logs'
-              request = Request(url, headers={
-                  'Authorization': f'Bearer {token}',
+              urls = [
+                  f'https://api.github.com/repos/{repo_name}/actions/jobs/{job_id}/logs',
+                  f'https://github.com/{repo_name}/actions/jobs/{job_id}/logs',
+              ]
+              headers = {
                   'Accept': 'application/vnd.github+json',
                   'X-GitHub-Api-Version': '2022-11-28',
-              })
-              try:
-                  with urlopen(request, timeout=90) as response:
-                      return response.read().decode('utf-8', errors='replace')
-              except (HTTPError, URLError, TimeoutError, OSError):
-                  return ''
+              }
+              if token:
+                  headers['Authorization'] = f'Bearer {token}'
+              for index, url in enumerate(urls):
+                  try:
+                      with urlopen(Request(url, headers=headers if index == 0 else {'User-Agent': 'CI-Detective'}), timeout=90) as response:
+                          data = response.read().decode('utf-8', errors='replace')
+                          if data.strip():
+                              return data
+                  except (HTTPError, URLError, TimeoutError, OSError):
+                      continue
+              return ''
 
           recent = [r for r in runs if parse_time(r.get('updated_at') or r.get('created_at')) and parse_time(r.get('updated_at') or r.get('created_at')) >= cutoff]
           if not recent:
