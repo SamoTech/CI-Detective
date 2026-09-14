@@ -10,6 +10,7 @@ from ci_detective import (
     classify_failure,
     extract_failing_tests,
     extract_traceback_files,
+    fetch_job_logs,
     post_or_update_pr_comment,
     pull_request_number,
     render_markdown_report,
@@ -93,6 +94,35 @@ def test_remote_commit_fallback(monkeypatch):
     evidence = analyze_remote_commit("SamoTech/CI-Detective", "abcdef123456", ["src/generator.py"])
     assert any("changed in the failing commit" in item for item in evidence)
     assert any("Likely regression candidate" in item for item in evidence)
+
+
+def test_fetch_job_logs_falls_back_to_the_requested_job(monkeypatch):
+    calls = []
+
+    class Result:
+        def __init__(self, returncode, stdout=""):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "curl":
+            return Result(22, "")
+        if command[:3] == ["gh", "api", "repos/SamoTech/CI-Detective/actions/runs/123/jobs?per_page=100"]:
+            return Result(0, "")
+        if command[:3] == ["gh", "run", "view"]:
+            assert "--job" in command
+            assert command[command.index("--job") + 1] == "456"
+            assert "--log" in command
+            assert "--log-failed" not in command
+            return Result(0, "requested job log")
+        raise AssertionError(command)
+
+    monkeypatch.setenv("GH_TOKEN", "token")
+    monkeypatch.setattr("ci_detective.subprocess.run", fake_run)
+    monkeypatch.setattr("ci_detective.gh_api", lambda path: {"jobs": [{"id": 456, "name": "test"}]})
+    assert fetch_job_logs("SamoTech/CI-Detective", "123", 456) == "requested job log"
+    assert any(command[:3] == ["gh", "run", "view"] for command in calls)
 
 
 def test_markdown_report_contains_context_and_evidence():
