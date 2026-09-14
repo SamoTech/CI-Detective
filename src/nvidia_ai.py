@@ -171,9 +171,11 @@ def analyse_with_fallback(context: str) -> dict[str, Any]:
         try:
             data = _request("/chat/completions", "POST", payload)
             content = data["choices"][0]["message"]["content"]
-            parsed = _validate_ai_result(_extract_json(content))
-            if not parsed["summary"] and not parsed["root_cause_hypotheses"]:
-                raise RuntimeError("model returned an empty analysis")
+            raw = _extract_json(content)
+            required = {"summary", "root_cause_hypotheses", "recommended_fix", "verification_plan"}
+            if not raw or not any(key in raw for key in required):
+                raise RuntimeError("model returned an empty or incomplete analysis")
+            parsed = _validate_ai_result(raw)
             parsed["model"] = model
             parsed["model_selection_reason"] = reason
             parsed["attempt"] = index + 1
