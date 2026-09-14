@@ -78,7 +78,7 @@ def classify_failure(log_text:str)->Diagnosis:
             return Diagnosis(cat,root if rc=="high" else summary,list(dict.fromkeys(evidence)),"high" if rc=="high" else conf,tests,files,errors,[],root,symbol)
     if re.search(r"(?:^|\s)(?:FAILED|FAILURES|failed tests?|test suites? failed)\b",text,re.I):
         root,symbol,rc=infer_root_cause(text,"TEST_FAILURE")
-        return Diagnosis("TEST_FAILURE",root,( ["Failing test: "+tests[0]] if tests else [])+errors[:4],"high" if rc=="high" else "medium",tests,files,errors,[],root,symbol)
+        return Diagnosis("TEST_FAILURE",root,(["Failing test: "+tests[0]] if tests else [])+errors[:4],"high" if rc=="high" else "medium",tests,files,errors,[],root,symbol)
     return Diagnosis("UNKNOWN","The failure could not be classified by the current deterministic rules.",errors[:4],"low",tests,files,errors)
 
 def gh_api(path:str,method:str="GET",payload:dict[str,Any]|None=None)->Any:
@@ -149,6 +149,18 @@ def fetch_job_logs(repo:str,run_id:str,job_id:int)->str:
         r=subprocess.run(["gh","run","view",run_id,"--repo",repo,"--job",str(job_id),"--log","--color","never"],capture_output=True,text=True,env=os.environ.copy()); return r.stdout if r.returncode==0 else""
     except(subprocess.CalledProcessError,TypeError,ValueError):return""
 
+def fetch_all_pr_comments(repo:str,pr_number:int)->list[dict[str,Any]]:
+    first=github_comment_api(f"repos/{repo}/issues/{pr_number}/comments?per_page=100")
+    if not isinstance(first,list):return[]
+    if len(first)<100:return first
+    cmd=["gh","api","--paginate","--slurp",f"repos/{repo}/issues/{pr_number}/comments?per_page=100"]
+    r=subprocess.run(cmd,check=True,capture_output=True,text=True,env=os.environ.copy())
+    pages=json.loads(r.stdout) if r.stdout.strip() else[]
+    all_comments=[]
+    for page in pages if isinstance(pages,list) else[]:
+        if isinstance(page,list):all_comments.extend(page)
+    return all_comments or first
+
 def render_markdown_report(job_name:str,d:Diagnosis)->str:
     lines=["## CI Detective — Failure Diagnosis","",f"**Job:** `{job_name}`  ",f"**Category:** `{d.category}`  ",f"**Confidence:** **{d.confidence.upper()}**","","### Diagnosis",d.summary]
     if d.root_cause and d.root_cause!=d.summary:lines += ["","### Root Cause",d.root_cause]
@@ -189,7 +201,7 @@ def pull_request_number()->int|None:
     except(OSError,json.JSONDecodeError,TypeError,ValueError):return None
 
 def post_or_update_pr_comment(repo:str,pr_number:int,report:str)->str:
-    marker="<!-- ci-detective -->"; body=marker+"\n"+report; comments=github_comment_api(f"repos/{repo}/issues/{pr_number}/comments?per_page=100")
+    marker="<!-- ci-detective -->"; body=marker+"\n"+report; comments=fetch_all_pr_comments(repo,pr_number)
     existing=next((c for c in comments if marker in c.get("body","") and c.get("user",{}).get("type")=="Bot"),None)
     if existing:github_comment_api(f"repos/{repo}/issues/comments/{existing['id']}","PATCH",{"body":body});return"updated"
     github_comment_api(f"repos/{repo}/issues/{pr_number}/comments","POST",{"body":body});return"created"
@@ -202,7 +214,8 @@ def main()->int:
         if not failed:print("CI Detective: no failed jobs found.");return 0
         ds=[]; sha=os.environ.get("GITHUB_SHA","")
         for job in failed:
-            d=classify_failure(fetch_job_logs(repo,run_id,int(job["id"]))); d.history=analyze_git_history(fetch_job_logs(repo,run_id,int(job["id"]))) or analyze_remote_commit(repo,sha,d.traceback_files); ds.append((job.get("name","unknown job"),d))
+            logs=fetch_job_logs(repo,run_id,int(job["id"]))
+            d=classify_failure(logs); d.history=analyze_git_history(logs) or analyze_remote_commit(repo,sha,d.traceback_files); ds.append((job.get("name","unknown job"),d))
         report=render_multi_job_report(ds);print(report);write_step_summary(report)
         if os.environ.get("INPUT_COMMENT_ON_PR","true").lower()=="true":
             n=pull_request_number()
