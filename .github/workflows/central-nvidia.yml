@@ -1,0 +1,68 @@
+name: CI Detective Central NVIDIA Analysis
+
+on:
+  workflow_call:
+    inputs:
+      evidence:
+        description: Deterministic CI Detective evidence to enhance
+        required: true
+        type: string
+      report:
+        description: Optional existing Markdown report to enhance
+        required: false
+        type: string
+        default: ''
+    outputs:
+      ai_status:
+        description: NVIDIA analysis status
+        value: ${{ jobs.analyze.outputs.ai_status }}
+      ai_model:
+        description: NVIDIA model selected by the live router
+        value: ${{ jobs.analyze.outputs.ai_model }}
+      ai_diagnosis:
+        description: Enhanced NVIDIA diagnosis
+        value: ${{ jobs.analyze.outputs.ai_diagnosis }}
+
+jobs:
+  analyze:
+    name: Central NVIDIA analysis
+    runs-on: ubuntu-latest
+    environment: NVIDIA-CENTRAL
+    permissions:
+      contents: read
+    outputs:
+      ai_status: ${{ steps.analyze.outputs.ai_status }}
+      ai_model: ${{ steps.analyze.outputs.ai_model }}
+      ai_diagnosis: ${{ steps.analyze.outputs.ai_diagnosis }}
+    env:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      CI_DETECTIVE_AI_CONTEXT: ${{ inputs.evidence }}
+      CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/ci-detective-report.md
+    steps:
+      - name: Checkout CI Detective
+        uses: actions/checkout@v4
+        with:
+          repository: SamoTech/CI-Detective
+          ref: main
+          fetch-depth: 1
+
+      - name: Run NVIDIA enhancement
+        id: analyze
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 src/nvidia_ai.py | tee nvidia-output.txt
+          status="$(grep '^ai_status=' nvidia-output.txt | tail -1 | cut -d= -f2- || true)"
+          model="$(grep '^ai_model=' nvidia-output.txt | tail -1 | cut -d= -f2- || true)"
+          diagnosis="$(grep '^ai_diagnosis=' nvidia-output.txt | tail -1 | cut -d= -f2- || true)"
+          echo "ai_status=${status:-unavailable}" >> "$GITHUB_OUTPUT"
+          echo "ai_model=${model:-}" >> "$GITHUB_OUTPUT"
+          echo "ai_diagnosis=${diagnosis:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload central report
+        if: always() && hashFiles('ci-detective-report.md') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-detective-central-report-${{ github.run_id }}
+          path: ci-detective-report.md
+          retention-days: 14
