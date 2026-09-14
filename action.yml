@@ -1,5 +1,5 @@
 name: CI Detective
-description: Detect and explain common GitHub Actions CI failures without requiring an external AI service.
+description: Detect and explain common GitHub Actions CI failures with deterministic analysis and optional NVIDIA AI enhancement.
 author: SamoTech
 branding:
   icon: search
@@ -8,6 +8,10 @@ branding:
 inputs:
   comment-on-pr:
     description: Post the diagnosis as a PR comment when applicable.
+    required: false
+    default: 'true'
+  ai-analysis:
+    description: Enable optional NVIDIA free-model AI analysis when NVIDIA_API_KEY is configured.
     required: false
     default: 'true'
 
@@ -21,6 +25,15 @@ outputs:
   schema_version:
     description: Diagnosis JSON schema version.
     value: ${{ steps.detect.outputs.schema_version }}
+  ai_diagnosis:
+    description: Advisory NVIDIA AI analysis JSON payload, when available.
+    value: ${{ steps.ai.outputs.ai_diagnosis }}
+  ai_model:
+    description: NVIDIA model selected after live availability checks.
+    value: ${{ steps.ai.outputs.ai_model }}
+  ai_status:
+    description: NVIDIA AI status: success or unavailable.
+    value: ${{ steps.ai.outputs.ai_status }}
 
 runs:
   using: composite
@@ -30,4 +43,13 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        INPUT_COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
       run: python3 "${{ github.action_path }}/src/ci_detective.py"
+    - name: Run optional NVIDIA AI analysis
+      id: ai
+      if: ${{ inputs.ai-analysis == 'true' }}
+      shell: bash
+      env:
+        NVIDIA_API_KEY: ${{ env.NVIDIA_API_KEY }}
+        CI_DETECTIVE_AI_CONTEXT: ${{ steps.detect.outputs.diagnosis }}
+      run: python3 "${{ github.action_path }}/src/nvidia_ai.py"
