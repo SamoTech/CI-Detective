@@ -13,52 +13,52 @@ jobs:
       contents: read
     env:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      TARGET_REPO: SamoTech/RepoSource-Registry
       GH_TOKEN: ${{ github.token }}
+      TARGET_REPO: SamoTech/RepoSource-Registry
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Poll public failed runs
+      - name: Poll latest public failure
         shell: bash
         run: |
           set -euo pipefail
           gh api "repos/${TARGET_REPO}/actions/runs?status=failure&per_page=5" > runs.json
-          jq -r '.workflow_runs[] | [.id,.name,.html_url,.created_at,.head_sha] | @tsv' runs.json | tee failed-runs.tsv
-          test "$(jq -r '.total_count' runs.json)" -gt 0
-      - name: Analyze latest failed run
-        shell: bash
-        run: |
-          set -euo pipefail
-          run_id="$(jq -r '.workflow_runs[0].id' runs.json)"
+          run_id="$(jq -r '.workflow_runs[0].id // empty' runs.json)"
+          test -n "$run_id"
           run_url="$(jq -r '.workflow_runs[0].html_url' runs.json)"
           gh api "repos/${TARGET_REPO}/actions/runs/${run_id}/jobs?per_page=100" > jobs.json
-          : > report.md
-          printf '%s\n\n' '# CI Detective — Central Public Repository Report' >> report.md
-          printf '%s\n' "**Repository:** \`${TARGET_REPO}\`  " "**Workflow run:** [${run_id}](${run_url})" >> report.md
-          failed="$(jq -r '[.jobs[] | select(.conclusion == "failure") | .id] | .[]' jobs.json)"
-          test -n "$failed"
-          for job_id in $failed; do
-            job_name="$(jq -r ".jobs[] | select(.id == ${job_id}) | .name" jobs.json)"
-            log_file="job-${job_id}.log"
-            gh api "repos/${TARGET_REPO}/actions/jobs/${job_id}/logs" > "$log_file" || true
-            printf '%s\n' "" "## Failed Job: \`${job_name}\`" >> report.md
-            if grep -qiE 'TypeError|AssertionError|ModuleNotFoundError|ImportError|ReferenceError|SyntaxError|npm ERR!|command not found|permission denied|out of memory|timed out' "$log_file"; then
-              grep -iE 'TypeError|AssertionError|ModuleNotFoundError|ImportError|ReferenceError|SyntaxError|npm ERR!|command not found|permission denied|out of memory|timed out' "$log_file" | head -8 | sed 's/^/- /' >> report.md
-            else
-              echo '- Failure log retrieved; no supported deterministic pattern matched.' >> report.md
-            fi
-          done
-          printf '%s\n' '' '---' 'Central monitor uses the NVIDIA key only from the CI Detective NVIDIA-CENTRAL environment; it is never written to the customer repository.' >> report.md
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from src.ci_detective import classify_failure
+          repo=os.environ['TARGET_REPO']
+          run=json.loads(Path('runs.json').read_text())['workflow_runs'][0]
+          jobs=json.loads(Path('jobs.json').read_text())['jobs']
+          out=['## CI Detective — Central Public Repository Report','',f"**Repository:** `{repo}`  ",f"**Run:** [{run['id']}]({run['html_url']})  ",f"**Commit:** `{run.get('head_sha','')}`",'']
+          all_items=[]
+          for job in jobs:
+              if job.get('conclusion')!='failure': continue
+              import subprocess
+              r=subprocess.run(['gh','api',f"repos/{repo}/actions/jobs/{job['id']}/logs"],capture_output=True,text=True)
+              log=r.stdout if r.returncode==0 else ''
+              d=classify_failure(log)
+              item={'job':job.get('name','unknown'),'job_id':job['id'],'category':d.category,'summary':d.summary,'confidence':d.confidence,'evidence':d.evidence,'failing_tests':d.failing_tests,'traceback_files':d.traceback_files}
+              all_items.append(item)
+              out += [f"### Failed Job: `{item['job']}`",'',f"**Category:** `{d.category}`  ",f"**Confidence:** **{d.confidence.upper()}**",'',d.summary]
+              if d.evidence: out += ['', '#### Evidence']+[f'- {x}' for x in d.evidence]
+          payload={'schema_version':'1.0','repository':repo,'workflow_run_id':run['id'],'workflow_run_url':run['html_url'],'commit':run.get('head_sha',''),'failed_jobs':all_items}
+          Path('report.md').write_text('\n'.join(out)+"\n\n```json\n"+json.dumps(payload,indent=2)+"\n```\n",encoding='utf-8')
+          Path('ai-context.json').write_text(json.dumps(payload,separators=(',',':')),encoding='utf-8')
+          PY
       - name: NVIDIA enhanced analysis
         if: ${{ env.NVIDIA_API_KEY != '' }}
         env:
-          CI_DETECTIVE_AI_CONTEXT: ${{ github.workspace }}/report.md
+          CI_DETECTIVE_AI_CONTEXT: ${{ github.workspace }}/ai-context.json
           CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/report.md
-          GITHUB_STEP_SUMMARY: ${{ github.workspace }}/report.md
         shell: bash
         run: python3 src/nvidia_ai.py
-      - name: Publish central report artifact
+      - name: Publish central report
         if: always()
         uses: actions/upload-artifact@v4
         with:
