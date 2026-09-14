@@ -87,6 +87,7 @@ def choose_models(models: list[str], context: str) -> list[tuple[str, int, str]]
     if not ranked:
         return []
     complexity = _complexity_score(context)
+
     def key(item: tuple[str, int, str]) -> tuple[int, int]:
         _name, score, reason = item
         long_ctx = int("long-context" in reason)
@@ -94,6 +95,7 @@ def choose_models(models: list[str], context: str) -> list[tuple[str, int, str]]
         if complexity >= 20:
             return (score + 8 * long_ctx, -fast)
         return (score + 8 * fast, -long_ctx)
+
     return sorted(ranked, key=key, reverse=True)
 
 
@@ -115,18 +117,47 @@ def _extract_json(text: str) -> dict[str, Any]:
             return {}
 
 
+def _string_list(value: Any, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(x).strip()[:500] for x in value if str(x).strip()][:limit]
+
+
+def _validate_ai_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep the model useful without allowing it to change the evidence contract."""
+    confidence = str(result.get("confidence", "low")).lower()
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "low"
+    fix_confidence = str(result.get("fix_confidence", confidence)).lower()
+    if fix_confidence not in {"low", "medium", "high"}:
+        fix_confidence = "low"
+    return {
+        "summary": str(result.get("summary", "No AI summary returned.")).strip()[:2000],
+        "root_cause_hypotheses": _string_list(result.get("root_cause_hypotheses"), 5),
+        "confidence": confidence,
+        "evidence_refs": _string_list(result.get("evidence_refs"), 8),
+        "recommended_fix": _string_list(result.get("recommended_fix"), 6),
+        "verification_plan": _string_list(result.get("verification_plan"), 8),
+        "fix_confidence": fix_confidence,
+        "warnings": _string_list(result.get("warnings"), 5),
+    }
+
+
 def analyse_with_fallback(context: str) -> dict[str, Any]:
     live = available_models()
     choices = choose_models(live, context)
     if not choices:
         raise RuntimeError("No supported free NVIDIA coding/reasoning model is currently available to this API key")
     system = (
-        "You are the optional AI analysis layer for CI Detective. The deterministic analyzer is authoritative. "
-        "Analyze only the supplied deterministic report and evidence. Never invent files, tests, commits, causes, or fixes. "
+        "You are the primary enhanced reasoning layer for CI Detective. The deterministic analyzer is the authoritative evidence source. "
+        "Use only the supplied deterministic report and evidence. Never invent files, tests, commits, causes, or fixes. "
         "A changed file is correlation, not causation. If exact evidence is missing, explicitly say it is missing instead of guessing. "
-        "Every hypothesis must be traceable to a supplied evidence item. Prefer a small number of evidence-backed hypotheses. "
-        "Return strict JSON with keys: summary, root_cause_hypotheses, confidence, evidence_refs, recommended_next_checks, warnings. "
-        "confidence must be low, medium, or high."
+        "Your job is to turn evidence into an actionable diagnosis and a safe resolution plan. Separate confirmed facts from hypotheses. "
+        "Do not claim that a proposed fix has been applied or verified. Do not produce executable patches. "
+        "Every hypothesis, fix, and verification step must be traceable to supplied evidence. "
+        "Return strict JSON with exactly these keys: summary, root_cause_hypotheses, confidence, evidence_refs, "
+        "recommended_fix, verification_plan, fix_confidence, warnings. "
+        "confidence and fix_confidence must be low, medium, or high. Arrays must contain concise strings."
     )
     user = "CI Detective deterministic evidence:\n" + context[:50000]
     errors: list[str] = []
@@ -135,20 +166,21 @@ def analyse_with_fallback(context: str) -> dict[str, Any]:
             "model": model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "temperature": 0.1,
-            "max_tokens": 1400,
+            "max_tokens": 1800,
         }
         try:
             data = _request("/chat/completions", "POST", payload)
             content = data["choices"][0]["message"]["content"]
-            parsed = _extract_json(content)
-            if not parsed:
-                raise RuntimeError("model returned invalid JSON")
+            parsed = _validate_ai_result(_extract_json(content))
+            if not parsed["summary"] and not parsed["root_cause_hypotheses"]:
+                raise RuntimeError("model returned an empty analysis")
             parsed["model"] = model
             parsed["model_selection_reason"] = reason
             parsed["attempt"] = index + 1
             parsed["available_free_models"] = [x[0] for x in choices]
             parsed["backup_model"] = choices[index + 1][0] if index + 1 < len(choices) else None
             parsed["deterministic_authority"] = True
+            parsed["analysis_role"] = "primary_enhanced_analysis"
             return parsed
         except Exception as exc:
             errors.append(f"{model}: {type(exc).__name__}")
@@ -157,25 +189,33 @@ def analyse_with_fallback(context: str) -> dict[str, Any]:
 
 def render_ai_report(result: dict[str, Any]) -> str:
     lines = [
-        "", "## CI Detective — NVIDIA AI Analysis", "",
+        "", "## CI Detective — NVIDIA AI Enhanced Analysis", "",
+        "**Analysis role:** **PRIMARY ENHANCED ANALYSIS**  ",
         f"**Model:** `{result.get('model', 'unknown')}`  ",
         f"**Backup:** `{result.get('backup_model') or 'none available'}`  ",
-        f"**AI Confidence:** **{str(result.get('confidence', 'low')).upper()}**", "",
+        f"**AI Confidence:** **{str(result.get('confidence', 'low')).upper()}**  ",
+        f"**Fix Confidence:** **{str(result.get('fix_confidence', 'low')).upper()}**", "",
         "### AI Summary", str(result.get("summary", "No AI summary returned.")),
     ]
     hypotheses = result.get("root_cause_hypotheses") or []
     if hypotheses:
         lines += ["", "### Root-Cause Hypotheses"] + [f"- {x}" for x in hypotheses[:5]]
-    checks = result.get("recommended_next_checks") or []
+    fixes = result.get("recommended_fix") or []
+    if fixes:
+        lines += ["", "### Recommended Fix"] + [f"- {x}" for x in fixes[:6]]
+    checks = result.get("verification_plan") or []
     if checks:
-        lines += ["", "### Recommended Next Checks"] + [f"- {x}" for x in checks[:6]]
+        lines += ["", "### Verification Plan"] + [f"- {x}" for x in checks[:8]]
     refs = result.get("evidence_refs") or []
     if refs:
         lines += ["", "### Evidence References"] + [f"- {x}" for x in refs[:8]]
     warnings = result.get("warnings") or []
     if warnings:
         lines += ["", "### Warnings"] + [f"- {x}" for x in warnings[:5]]
-    lines += ["", f"**Free NVIDIA models detected:** {len(result.get('available_free_models', []))}", "", "AI is advisory; deterministic CI Detective evidence remains authoritative.", ""]
+    lines += [
+        "", f"**Free NVIDIA models detected:** {len(result.get('available_free_models', []))}",
+        "", "AI provides the primary enhanced reasoning and resolution plan; deterministic CI Detective evidence remains authoritative.", "",
+    ]
     return "\n".join(lines)
 
 
@@ -201,7 +241,7 @@ def _context_from_environment() -> str:
 
 def main() -> int:
     if not os.environ.get("NVIDIA_API_KEY"):
-        print("CI Detective: NVIDIA AI disabled; NVIDIA_API_KEY is not configured.")
+        print("CI Detective: NVIDIA AI unavailable; deterministic analysis remains active because NVIDIA_API_KEY is not configured.")
         return 0
     context = _context_from_environment()
     if not context:
@@ -229,7 +269,7 @@ def main() -> int:
                 handle.write("ai_diagnosis=" + json.dumps(result, separators=(",", ":")) + "\n")
         return 0
     except Exception as exc:
-        print(f"CI Detective: NVIDIA AI unavailable; deterministic diagnosis remains active: {exc}", file=sys.stderr)
+        print(f"CI Detective: NVIDIA AI unavailable; deterministic analysis remains active: {exc}", file=sys.stderr)
         output = os.environ.get("GITHUB_OUTPUT")
         if output:
             with open(output, "a", encoding="utf-8") as handle:
