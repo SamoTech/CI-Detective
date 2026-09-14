@@ -8,8 +8,6 @@ Deterministic CI failure diagnosis with no paid AI dependency. The engine extrac
 
 ## Use in a workflow
 
-Keep read permissions at workflow scope and grant write permissions only to the detective job:
-
 ```yaml
 permissions:
   contents: read
@@ -23,12 +21,12 @@ jobs:
   detect:
     if: ${{ failure() }}
     needs: test
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       actions: read
       issues: write
       pull-requests: write
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,13 +36,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 ```
 
-When the workflow runs in Pull Request context, CI Detective adds or updates a single PR comment using a hidden marker, preventing duplicate comments. Set `comment-on-pr: 'false'` to disable PR comments.
+When the workflow runs in Pull Request context, CI Detective adds or updates a single PR comment using a hidden marker, preventing duplicate comments. Set `comment-on-pr: 'false'` to disable PR comments. Fork pull requests may receive a read-only `GITHUB_TOKEN`, so PR comment delivery can be unavailable depending on repository and event permissions.
 
-For forked pull requests and other workflows where GitHub downgrades the available token permissions, PR comment creation or updates may be unavailable. Diagnosis in the job summary and JSON outputs should be treated as the primary result in those cases.
+## Outputs
 
-## Action outputs
-
-The Action exposes a versioned `diagnosis` JSON payload containing every failed job, plus `confidence` and `schema_version` for the primary diagnosis. The current payload schema version is `1.0`.
+The action exposes `diagnosis`, `confidence`, and `schema_version` outputs. `diagnosis` is a versioned JSON payload containing all failed jobs; the current schema version is `1.0`.
 
 ## What it detects
 
@@ -56,7 +52,9 @@ The Action exposes a versioned `diagnosis` JSON payload containing every failed 
 - permission failures
 - resource exhaustion
 - timeouts
-- regression signals based on traceback files and changed files; a changed-file match is correlation evidence, not proof of causation
+- likely regressions based on traceback files and changed files
+
+Regression correlation is explicitly treated as evidence, not proof of causation.
 
 ## Design principles
 
