@@ -151,8 +151,14 @@ def fetch_job_logs(repo:str,run_id:str,job_id:int)->str:
     url=f"https://api.github.com/repos/{repo}/actions/jobs/{job_id}/logs"
     direct=subprocess.run(["curl","-fsSL","-H",f"Authorization: Bearer {token}","-H","Accept: application/vnd.github+json",url],capture_output=True,text=True,env=os.environ.copy())
     if direct.returncode==0 and direct.stdout.strip(): return direct.stdout
-    fallback=subprocess.run(["gh","run","view",run_id,"--repo",repo,"--log-failed","--color","never"],capture_output=True,text=True,env=os.environ.copy())
-    return fallback.stdout if fallback.returncode==0 else ""
+    try:
+        jobs=gh_api(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100")
+        job=next((item for item in jobs.get("jobs",[]) if int(item.get("id",-1))==job_id),None)
+        if not job: return ""
+        fallback=subprocess.run(["gh","run","view",run_id,"--repo",repo,"--job",str(job_id),"--log","--color","never"],capture_output=True,text=True,env=os.environ.copy())
+        return fallback.stdout if fallback.returncode==0 else ""
+    except (subprocess.CalledProcessError,TypeError,ValueError):
+        return ""
 
 def render_markdown_report(job_name:str,diagnosis:Diagnosis)->str:
     lines=["## CI Detective — Failure Diagnosis","",f"**Job:** `{job_name}`  ",f"**Category:** `{diagnosis.category}`  ",f"**Confidence:** **{diagnosis.confidence.upper()}**","","### Diagnosis",diagnosis.summary]
@@ -224,10 +230,8 @@ def main()->int:
         if os.environ.get("INPUT_COMMENT_ON_PR","true").lower()=="true":
             pr_number=pull_request_number()
             if pr_number:
-                try:
-                    print(f"CI Detective: PR comment {post_or_update_pr_comment(repo,pr_number,report)}.")
-                except Exception as exc:
-                    print(f"CI Detective warning: PR comment delivery failed: {exc}",file=sys.stderr)
+                try: print(f"CI Detective: PR comment {post_or_update_pr_comment(repo,pr_number,report)}.")
+                except Exception as exc: print(f"CI Detective warning: PR comment delivery failed: {exc}",file=sys.stderr)
             else: print("CI Detective: no pull request context; skipping PR comment.")
         output_path=os.environ.get("GITHUB_OUTPUT")
         if output_path:
@@ -235,3 +239,5 @@ def main()->int:
             with open(output_path,"a",encoding="utf-8") as f:f.write(f"diagnosis={json.dumps(payload,separators=(',',':'))}\nconfidence={diagnoses[0][1].confidence}\n")
         return 0
     except Exception as exc: print(f"CI Detective error: {exc}",file=sys.stderr); return 1
+
+if __name__ == "__main__": sys.exit(main())
