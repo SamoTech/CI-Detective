@@ -139,7 +139,7 @@ def test_pr_comment_is_created(monkeypatch):
             return []
         return {"id": 99}
 
-    monkeypatch.setattr("ci_detective.gh_api", fake_api)
+    monkeypatch.setattr("ci_detective.github_comment_api", fake_api)
     result = post_or_update_pr_comment("SamoTech/CI-Detective", 42, "## report")
     assert result == "created"
     assert calls[-1][0] == "repos/SamoTech/CI-Detective/issues/42/comments"
@@ -155,7 +155,7 @@ def test_pr_comment_is_updated(monkeypatch):
             return [{"id": 77, "body": "<!-- ci-detective -->\nold", "user": {"type": "Bot"}}]
         return {"id": 77}
 
-    monkeypatch.setattr("ci_detective.gh_api", fake_api)
+    monkeypatch.setattr("ci_detective.github_comment_api", fake_api)
     result = post_or_update_pr_comment("SamoTech/CI-Detective", 42, "## new report")
     assert result == "updated"
     assert calls[-1][0] == "repos/SamoTech/CI-Detective/issues/comments/77"
