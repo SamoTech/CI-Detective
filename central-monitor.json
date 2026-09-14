@@ -1,5 +1,5 @@
 {
   "repositories": ["SamoTech/RepoSource-Registry"],
-  "lookback_minutes": 120,
+  "lookback_minutes": 360,
   "max_failed_jobs": 8
 }
