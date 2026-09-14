@@ -1,5 +1,5 @@
 name: CI Detective
-description: Detect and explain common GitHub Actions CI failures with deterministic analysis and optional NVIDIA AI enhancement.
+description: Detect and explain common GitHub Actions CI failures with deterministic evidence and primary optional NVIDIA AI enhanced analysis.
 author: SamoTech
 branding:
   icon: search
@@ -11,7 +11,7 @@ inputs:
     required: false
     default: 'true'
   ai-analysis:
-    description: Enable optional NVIDIA free-model AI analysis when NVIDIA_API_KEY is configured.
+    description: Enable primary enhanced NVIDIA free-model AI analysis when NVIDIA_API_KEY is configured; deterministic evidence remains authoritative and AI failure is non-fatal.
     required: false
     default: 'true'
   report-destination:
@@ -28,13 +28,13 @@ outputs:
     description: Versioned JSON diagnosis payload containing all failed jobs.
     value: ${{ steps.detect.outputs.diagnosis }}
   confidence:
-    description: Confidence of the primary diagnosis.
+    description: Confidence of the primary deterministic diagnosis.
     value: ${{ steps.detect.outputs.confidence }}
   schema_version:
     description: Diagnosis JSON schema version.
     value: ${{ steps.detect.outputs.schema_version }}
   ai_diagnosis:
-    description: Advisory NVIDIA AI analysis JSON payload, when available.
+    description: Primary enhanced NVIDIA AI analysis JSON payload, when available.
     value: ${{ steps.ai.outputs.ai_diagnosis }}
   ai_model:
     description: NVIDIA model selected after live availability checks.
@@ -76,7 +76,7 @@ runs:
           printf '%s\n' '' >> "$REPORT_FILE"
           printf '%s\n' 'The deterministic report was generated but the runner summary file was unavailable.' >> "$REPORT_FILE"
         fi
-    - name: Run optional NVIDIA AI analysis
+    - name: Run primary enhanced NVIDIA AI analysis
       id: ai
       if: ${{ inputs.ai-analysis == 'true' }}
       shell: bash
