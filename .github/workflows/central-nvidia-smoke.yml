@@ -1,0 +1,14 @@
+name: Central NVIDIA Smoke Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    uses: SamoTech/CI-Detective/.github/workflows/central-nvidia.yml@main
+    with:
+      evidence: |
+        CI Detective smoke test.
+        Failed job: intentional-failure
+        Category: TYPE_ERROR
+        Confidence: HIGH
