@@ -94,7 +94,7 @@ runs:
         INPUT_REPORT_DESTINATION: ${{ inputs.report-destination }}
         INPUT_REPORT_PATH: ${{ inputs.report-path }}
         CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/.ci-detective/reports/ci-detective-report.md
-      run: python3 "${{ github.action_path }}/src/publish_report.py"
+      run: export GITHUB_STEP_SUMMARY="$CI_DETECTIVE_REPORT_FILE"; python3 "${{ github.action_path }}/src/publish_report.py"
     - name: Upload customer Markdown report artifact
       if: ${{ always() }}
       uses: actions/upload-artifact@v4
