@@ -21,6 +21,11 @@ jobs:
   detect:
     if: ${{ failure() }}
     needs: intentional-failure
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
