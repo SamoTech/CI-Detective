@@ -63,7 +63,7 @@ def test_fallback_uses_next_live_model(monkeypatch):
 
     monkeypatch.setattr(nvidia_ai, "_request", fake_request)
     result = nvidia_ai.analyse_with_fallback("TypeError in failed job")
-    assert calls == ["deepseek-v4-pro-0813", "deepseek-v4-flash-0731"]
-    assert result["model"] == "deepseek-v4-flash-0731"
+    assert calls == ["deepseek-v4-flash-0731", "deepseek-v4-pro-0813"]
+    assert result["model"] == "deepseek-v4-pro-0813"
     assert result["attempt"] == 2
     assert result["deterministic_authority"] is True
