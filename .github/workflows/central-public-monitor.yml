@@ -1,0 +1,21 @@
+name: CI Detective Central Public Monitor
+
+on:
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    environment: NVIDIA-CENTRAL
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check central monitor POC
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          print('Central public monitor POC is active')
+          print('NVIDIA key configured:', bool(__import__('os').environ.get('NVIDIA_API_KEY')))
+          PY
