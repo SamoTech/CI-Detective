@@ -4,6 +4,8 @@ import json,os,re,subprocess,sys
 from dataclasses import dataclass,field
 from typing import Any
 
+COMMAND_TIMEOUT=30
+
 @dataclass
 class Diagnosis:
     category:str
@@ -16,6 +18,11 @@ class Diagnosis:
     history:list[str]=field(default_factory=list)
     root_cause:str=""
     implicated_symbol:str=""
+
+def run_command(command:list[str],**kwargs:Any)->subprocess.CompletedProcess[str]:
+    kwargs.setdefault("timeout",COMMAND_TIMEOUT)
+    kwargs.setdefault("env",os.environ.copy())
+    return subprocess.run(command,**kwargs)
 
 PATTERNS=[
 ("typeerror","TYPE_ERROR","A TypeError was detected; inspect the failing call and recent signature changes.","high"),
@@ -86,7 +93,7 @@ def gh_api(path:str,method:str="GET",payload:dict[str,Any]|None=None)->Any:
     cmd=["gh","api",path]
     if method!="GET":cmd += ["--method",method]
     if payload is not None:cmd += ["--input","-"]
-    r=subprocess.run(cmd,input=json.dumps(payload) if payload is not None else None,check=True,capture_output=True,text=True,env=os.environ.copy())
+    r=run_command(cmd,input=json.dumps(payload) if payload is not None else None,check=True,capture_output=True,text=True)
     return json.loads(r.stdout) if r.stdout.strip() else {}
 
 def github_comment_api(path:str,method:str="GET",payload:dict[str,Any]|None=None)->Any:
@@ -95,21 +102,22 @@ def github_comment_api(path:str,method:str="GET",payload:dict[str,Any]|None=None
     cmd=["curl","-fsSL","-X",method,"-H",f"Authorization: Bearer {token}","-H","Accept: application/vnd.github+json","-H","X-GitHub-Api-Version: 2022-11-28"]
     if payload is not None:cmd += ["-H","Content-Type: application/json","--data-binary",json.dumps(payload,separators=(",",":"),ensure_ascii=False)]
     cmd.append("https://api.github.com/"+path.lstrip("/"))
-    r=subprocess.run(cmd,check=True,capture_output=True,text=True,env=os.environ.copy())
+    r=run_command(cmd,check=True,capture_output=True,text=True)
     return json.loads(r.stdout) if r.stdout.strip() else {}
 
-def git_command(*args:str)->str:return subprocess.run(["git",*args],check=True,capture_output=True,text=True,env=os.environ.copy()).stdout
+def git_command(*args:str)->str:return run_command(["git",*args],check=True,capture_output=True,text=True).stdout
 
 def _matching(changed:list[str],implicated:list[str])->list[str]:return[p for p in implicated if any(p==c or p.endswith("/"+c) or c.endswith("/"+p) for c in changed)]
 
 def analyze_git_history(log_text:str)->list[str]:
     try:
         head=git_command("rev-parse","HEAD").strip(); parent=git_command("rev-parse","HEAD^").strip(); changed=[x.strip().replace("\\","/") for x in git_command("diff","--name-only",parent,head).splitlines() if x.strip()]; implicated=extract_traceback_files(log_text); matching=_matching(changed,implicated)
-    except(subprocess.CalledProcessError,FileNotFoundError):return[]
+    except(subprocess.CalledProcessError,subprocess.TimeoutExpired,FileNotFoundError):return[]
     e=[f"Failure traceback references {p}, which changed in HEAD." for p in matching[:3]]
     if changed and implicated and not matching:e.append("The failure has a source traceback, but none of its files changed in HEAD.")
     if changed:e.append("HEAD changed: "+", ".join(changed[:10]))
-    subject=git_command("log","-1","--format=%s",head).strip()
+    try:subject=git_command("log","-1","--format=%s",head).strip()
+    except(subprocess.CalledProcessError,subprocess.TimeoutExpired):subject=""
     if subject:e.append(f"Current commit {head[:7]}: {subject}")
     if matching:e.append(f"Likely regression candidate: current commit {head[:7]} changed an implicated source file.")
     return e
@@ -120,7 +128,7 @@ def fetch_all_commit_files(repo:str,sha:str)->list[dict[str,Any]]:
     files=list(first.get("files",[]) or[])
     if len(files)<100:return files
     cmd=["gh","api","--paginate","--slurp",f"repos/{repo}/commits/{sha}?per_page=100"]
-    r=subprocess.run(cmd,check=True,capture_output=True,text=True,env=os.environ.copy())
+    r=run_command(cmd,check=True,capture_output=True,text=True)
     pages=json.loads(r.stdout) if r.stdout.strip() else[]
     all_files=[]
     for page in pages if isinstance(pages,list) else[]:
@@ -129,9 +137,13 @@ def fetch_all_commit_files(repo:str,sha:str)->list[dict[str,Any]]:
 
 def analyze_remote_commit(repo:str,sha:str,implicated:list[str])->list[str]:
     if not repo or not sha or not implicated:return[]
-    try:commit=gh_api(f"repos/{repo}/commits/{sha}"); changed_files=fetch_all_commit_files(repo,sha)
-    except Exception:return[]
-    changed=[f.get("filename","") for f in changed_files if f.get("filename")]; matching=_matching(changed,implicated); e=[f"Failure traceback references {p}, which changed in the failing commit." for p in matching[:3]]
+    try:
+        commit=gh_api(f"repos/{repo}/commits/{sha}")
+        changed_files=fetch_all_commit_files(repo,sha)
+    except(subprocess.CalledProcessError,subprocess.TimeoutExpired,json.JSONDecodeError,TypeError,ValueError,OSError) as exc:
+        return [f"Remote commit analysis unavailable: {type(exc).__name__}."]
+    if not isinstance(commit,dict):return["Remote commit analysis unavailable: invalid API response."]
+    changed=[f.get("filename","") for f in changed_files if isinstance(f,dict) and f.get("filename")]; matching=_matching(changed,implicated); e=[f"Failure traceback references {p}, which changed in the failing commit." for p in matching[:3]]
     if changed:e.append("Failing commit changed: "+", ".join(changed[:10]))
     message=commit.get("commit",{}).get("message","").splitlines()[0]
     if message:e.append(f"Failing commit {sha[:7]}: {message}")
@@ -141,20 +153,20 @@ def analyze_remote_commit(repo:str,sha:str,implicated:list[str])->list[str]:
 def fetch_job_logs(repo:str,run_id:str,job_id:int)->str:
     token=os.environ.get("GH_TOKEN")
     if not token:raise RuntimeError("GH_TOKEN is required")
-    url=f"https://api.github.com/repos/{repo}/actions/jobs/{job_id}/logs"; r=subprocess.run(["curl","-fsSL","-H",f"Authorization: Bearer {token}","-H","Accept: application/vnd.github+json",url],capture_output=True,text=True,env=os.environ.copy())
+    url=f"https://api.github.com/repos/{repo}/actions/jobs/{job_id}/logs"; r=run_command(["curl","-fsSL","-H",f"Authorization: Bearer {token}","-H","Accept: application/vnd.github+json",url],capture_output=True,text=True,timeout=60)
     if r.returncode==0 and r.stdout.strip():return r.stdout
     try:
         jobs=gh_api(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"); job=next((x for x in jobs.get("jobs",[]) if int(x.get("id",-1))==job_id),None)
         if not job:return""
-        r=subprocess.run(["gh","run","view",run_id,"--repo",repo,"--job",str(job_id),"--log","--color","never"],capture_output=True,text=True,env=os.environ.copy()); return r.stdout if r.returncode==0 else""
-    except(subprocess.CalledProcessError,TypeError,ValueError):return""
+        r=run_command(["gh","run","view",run_id,"--repo",repo,"--job",str(job_id),"--log","--color","never"],capture_output=True,text=True,timeout=60); return r.stdout if r.returncode==0 else""
+    except(subprocess.CalledProcessError,subprocess.TimeoutExpired,TypeError,ValueError):return""
 
 def fetch_all_pr_comments(repo:str,pr_number:int)->list[dict[str,Any]]:
     first=github_comment_api(f"repos/{repo}/issues/{pr_number}/comments?per_page=100")
     if not isinstance(first,list):return[]
     if len(first)<100:return first
     cmd=["gh","api","--paginate","--slurp",f"repos/{repo}/issues/{pr_number}/comments?per_page=100"]
-    r=subprocess.run(cmd,check=True,capture_output=True,text=True,env=os.environ.copy())
+    r=run_command(cmd,check=True,capture_output=True,text=True)
     pages=json.loads(r.stdout) if r.stdout.strip() else[]
     all_comments=[]
     for page in pages if isinstance(pages,list) else[]:
@@ -171,7 +183,7 @@ def render_markdown_report(job_name:str,d:Diagnosis)->str:
     if d.history:lines += ["","### Git History"]+[f"- {x}" for x in d.history[:6]]
     if any("Likely regression candidate" in x for x in d.history+d.evidence):lines += ["","### Assessment","**Likely regression detected:** No. The changed-file match is only a correlation signal and is not sufficient to establish causation."]
     elif d.category=="UNKNOWN":lines += ["","### Assessment","No deterministic root cause was established. Treat this result as a triage signal, not a definitive diagnosis."]
-    return "\n".join(lines+["","---","Generated by CI Detective — deterministic analysis; no external AI required.",""])
+    return "\n".join(lines+["","---","Generated by CI Detective — deterministic analysis; no external AI required",""])
 
 def render_multi_job_report(ds:list[tuple[str,Diagnosis]])->str:
     lines=["## CI Detective — Failure Diagnosis","",f"**Failed jobs:** **{len(ds)}**"]
@@ -185,7 +197,7 @@ def render_multi_job_report(ds:list[tuple[str,Diagnosis]])->str:
         if d.history:lines += ["","#### Git History"]+[f"- {x}" for x in d.history[:6]]
         if any("Likely regression candidate" in x for x in d.history+d.evidence):lines += ["","#### Assessment","**Likely regression detected:** No. The changed-file match is only a correlation signal and is not sufficient to establish causation."]
         elif d.category=="UNKNOWN":lines += ["","#### Assessment","No deterministic root cause was established. Treat this result as a triage signal, not a definitive diagnosis."]
-    return "\n".join(lines+["","---","Generated by CI Detective — deterministic analysis; no external AI required.",""])
+    return "\n".join(lines+["","---","Generated by CI Detective — deterministic analysis; no external AI required",""])
 
 def build_diagnosis_payload(ds:list[tuple[str,Diagnosis]])->dict[str,Any]:
     return {"schema_version":"1.0","failed_jobs":[{"job":name,"category":d.category,"confidence":d.confidence,"summary":d.summary,"root_cause":d.root_cause,"implicated_symbol":d.implicated_symbol,"failing_tests":d.failing_tests,"traceback_files":d.traceback_files,"history":d.history} for name,d in ds]}
