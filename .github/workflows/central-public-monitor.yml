@@ -2,6 +2,9 @@ name: CI Detective Central Public Monitor
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feat/central-public-monitor-poc
   schedule:
     - cron: '*/15 * * * *'
 
