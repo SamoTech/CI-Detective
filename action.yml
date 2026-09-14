@@ -1,5 +1,5 @@
 name: CI Detective
-description: Detect and explain common GitHub Actions CI failures without requiring an external AI service.
+description: Detect and explain common GitHub Actions CI failures with deterministic analysis and optional NVIDIA AI enhancement.
 author: SamoTech
 branding:
   icon: search
@@ -10,6 +10,18 @@ inputs:
     description: Post the diagnosis as a PR comment when applicable.
     required: false
     default: 'true'
+  ai-analysis:
+    description: Enable optional NVIDIA free-model AI analysis when NVIDIA_API_KEY is configured.
+    required: false
+    default: 'true'
+  report-destination:
+    description: 'Report persistence mode: auto, repo, or none. Auto publishes to the customer repository when the token has Contents write permission and otherwise keeps the report in the run artifact/summary.'
+    required: false
+    default: 'auto'
+  report-path:
+    description: Path for the customer-facing Markdown report in the customer repository.
+    required: false
+    default: '.ci-detective/reports/ci-detective-report.md'
 
 outputs:
   diagnosis:
@@ -21,6 +33,24 @@ outputs:
   schema_version:
     description: Diagnosis JSON schema version.
     value: ${{ steps.detect.outputs.schema_version }}
+  ai_diagnosis:
+    description: Advisory NVIDIA AI analysis JSON payload, when available.
+    value: ${{ steps.ai.outputs.ai_diagnosis }}
+  ai_model:
+    description: NVIDIA model selected after live availability checks.
+    value: ${{ steps.ai.outputs.ai_model }}
+  ai_status:
+    description: 'NVIDIA AI status: success or unavailable.'
+    value: ${{ steps.ai.outputs.ai_status }}
+  report_path:
+    description: Repository-relative path of the generated Markdown report.
+    value: ${{ steps.publish.outputs.report_path }}
+  report_url:
+    description: Direct GitHub URL to the Markdown report, or the workflow run URL when repository publishing is unavailable.
+    value: ${{ steps.publish.outputs.report_url }}
+  report_status:
+    description: 'Report persistence status: repo or artifact.'
+    value: ${{ steps.publish.outputs.report_status }}
 
 runs:
   using: composite
@@ -30,4 +60,46 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        INPUT_COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
       run: python3 "${{ github.action_path }}/src/ci_detective.py"
+    - name: Stage deterministic Markdown report
+      if: ${{ always() }}
+      shell: bash
+      env:
+        REPORT_FILE: ${{ github.workspace }}/.ci-detective/reports/ci-detective-report.md
+      run: |
+        mkdir -p "$(dirname "$REPORT_FILE")"
+        if [ -f "$GITHUB_STEP_SUMMARY" ] && grep -q "CI Detective" "$GITHUB_STEP_SUMMARY"; then
+          cp "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+        else
+          printf '%s\n' '## CI Detective — Failure Diagnosis' > "$REPORT_FILE"
+          printf '%s\n' '' >> "$REPORT_FILE"
+          printf '%s\n' 'The deterministic report was generated but the runner summary file was unavailable.' >> "$REPORT_FILE"
+        fi
+    - name: Run optional NVIDIA AI analysis
+      id: ai
+      if: ${{ inputs.ai-analysis == 'true' }}
+      shell: bash
+      env:
+        NVIDIA_API_KEY: ${{ env.NVIDIA_API_KEY }}
+        CI_DETECTIVE_AI_CONTEXT: ${{ steps.detect.outputs.diagnosis }}
+        CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/.ci-detective/reports/ci-detective-report.md
+      run: python3 "${{ github.action_path }}/src/nvidia_ai.py"
+    - name: Publish customer Markdown report
+      id: publish
+      if: ${{ always() }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_REPORT_DESTINATION: ${{ inputs.report-destination }}
+        INPUT_REPORT_PATH: ${{ inputs.report-path }}
+        CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/.ci-detective/reports/ci-detective-report.md
+      run: export GITHUB_STEP_SUMMARY="$CI_DETECTIVE_REPORT_FILE"; python3 "${{ github.action_path }}/src/publish_report.py"
+    - name: Upload customer Markdown report artifact
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ci-detective-report-${{ github.run_id }}
+        path: ${{ github.workspace }}/${{ inputs.report-path }}
+        if-no-files-found: ignore
+        retention-days: 14

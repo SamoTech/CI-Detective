@@ -1,0 +1,68 @@
+name: NVIDIA Free Router Test
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  intentional-failure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Emit representative CI failure
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          def add_values(left, right):
+              return left + right
+          add_values("text", 1)
+          PY
+
+  detect:
+    if: ${{ failure() }}
+    needs: intentional-failure
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run CI Detective with NVIDIA free routing
+        id: detective
+        uses: ./
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        with:
+          ai-analysis: 'true'
+          comment-on-pr: 'false'
+      - name: Validate deterministic and AI outputs
+        env:
+          DIAGNOSIS: ${{ steps.detective.outputs.diagnosis }}
+          AI_STATUS: ${{ steps.detective.outputs.ai_status }}
+          AI_MODEL: ${{ steps.detective.outputs.ai_model }}
+        run: |
+          test -n "$DIAGNOSIS"
+          python3 - <<'PY'
+          import json, os
+          payload = json.loads(os.environ["DIAGNOSIS"])
+          assert payload["schema_version"] == "1.0"
+          assert payload["failed_jobs"]
+          assert payload["failed_jobs"][0]["category"] == "TYPE_ERROR"
+          print("deterministic diagnosis: valid")
+          print("ai_status:", os.environ.get("AI_STATUS"))
+          print("ai_model:", os.environ.get("AI_MODEL"))
+          if os.environ.get("AI_STATUS") == "success":
+              assert os.environ.get("AI_MODEL")
+              print("NVIDIA free-model routing: active")
+          else:
+              print("NVIDIA free-model routing: unavailable; deterministic fallback preserved")
+          PY
+
