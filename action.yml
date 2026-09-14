@@ -32,7 +32,7 @@ outputs:
     description: NVIDIA model selected after live availability checks.
     value: ${{ steps.ai.outputs.ai_model }}
   ai_status:
-    description: NVIDIA AI status: success or unavailable.
+    description: 'NVIDIA AI status: success or unavailable.'
     value: ${{ steps.ai.outputs.ai_status }}
 
 runs:
