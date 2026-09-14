@@ -33,11 +33,14 @@ jobs:
           import json, os, subprocess
           from datetime import datetime, timedelta, timezone
           from pathlib import Path
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
           from src.ci_detective import classify_failure
 
           repo = os.environ['TARGET_REPO']
           lookback = int(os.environ.get('LOOKBACK_MINUTES', '120'))
           max_failed_jobs = int(os.environ.get('MAX_FAILED_JOBS', '8'))
+          token = os.environ.get('GH_TOKEN', '')
           runs = json.loads(Path('runs.json').read_text()).get('workflow_runs', [])
           cutoff = datetime.now(timezone.utc) - timedelta(minutes=lookback)
 
@@ -45,6 +48,19 @@ jobs:
               if not value:
                   return None
               return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+          def fetch_job_log(repo_name, job_id):
+              url = f'https://api.github.com/repos/{repo_name}/actions/jobs/{job_id}/logs'
+              request = Request(url, headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              })
+              try:
+                  with urlopen(request, timeout=90) as response:
+                      return response.read().decode('utf-8', errors='replace')
+              except (HTTPError, URLError, TimeoutError, OSError):
+                  return ''
 
           recent = [r for r in runs if parse_time(r.get('updated_at') or r.get('created_at')) and parse_time(r.get('updated_at') or r.get('created_at')) >= cutoff]
           if not recent:
@@ -72,14 +88,7 @@ jobs:
           all_items = []
           failed_jobs = [j for j in jobs if j.get('conclusion') == 'failure'][:max_failed_jobs]
           for job in failed_jobs:
-              try:
-                  log_result = subprocess.run(
-                      ['gh', 'run', 'view', str(run['id']), '--job', str(job['id']), '--log'],
-                      capture_output=True, text=True, timeout=90, check=False,
-                  )
-                  log_text = log_result.stdout if log_result.returncode == 0 else ''
-              except subprocess.TimeoutExpired:
-                  log_text = ''
+              log_text = fetch_job_log(repo, job['id'])
               d = classify_failure(log_text)
               item = {
                   'job': job.get('name', 'unknown'),
