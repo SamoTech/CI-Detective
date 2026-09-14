@@ -5,7 +5,7 @@
 
 CI Detective is a GitHub Action that investigates failed GitHub Actions jobs and produces an evidence-based Markdown diagnosis plus machine-readable outputs.
 
-It is designed for teams that want useful CI triage without sending every failure to a paid AI service.
+Its analysis pipeline combines deterministic evidence collection with a primary enhanced NVIDIA AI reasoning layer. The AI explains the failure, proposes a resolution, and defines a verification plan; deterministic evidence remains authoritative and external AI failure is non-fatal.
 
 ## What you get
 
@@ -16,13 +16,16 @@ When a workflow fails, CI Detective can:
 - classify common failures such as `TypeError`, assertions, imports, npm errors, missing commands, permissions, resource exhaustion, and timeouts
 - inspect traceback files, failing tests, changed files, commits, and relevant PR history
 - assess possible regressions without treating a changed file as proof of causation
+- use NVIDIA AI as the primary enhanced reasoning layer when a key is configured
+- produce evidence-backed root-cause hypotheses
+- recommend a practical fix without claiming that it has already been applied
+- generate a verification plan for the proposed fix
 - publish a readable diagnosis to a Pull Request
 - generate a customer-facing Markdown report
 - upload the report as a GitHub Actions artifact when repository publishing is unavailable
 - expose stable JSON outputs for automation
-- optionally enhance the deterministic report with NVIDIA AI using live model discovery and same-API fallback
 
-The deterministic analyzer remains authoritative. NVIDIA AI is advisory and can be disabled completely.
+The deterministic analyzer is the authoritative evidence source. NVIDIA AI is the primary enhanced reasoning layer when enabled, but remains optional and replaceable at the product level.
 
 ## Quick start
 
@@ -119,16 +122,34 @@ The action also uploads a run-specific GitHub Actions artifact. If repository pu
 
 Repository writes are intentionally optional. This prevents CI Detective from requiring write access just to diagnose a failure.
 
-## Optional NVIDIA AI enhancement
+## NVIDIA AI enhanced analysis
 
-NVIDIA AI is optional. The action first performs deterministic analysis. If `NVIDIA_API_KEY` is configured and `ai-analysis` is enabled, CI Detective:
+When `NVIDIA_API_KEY` is configured and `ai-analysis` is enabled, NVIDIA AI is the primary enhanced reasoning layer. The deterministic analyzer still supplies the authoritative evidence and the AI is not allowed to invent facts.
+
+For each analysis, CI Detective:
 
 1. queries NVIDIA's live model catalog
 2. selects an appropriate currently available model from its supported free-model registry
-3. sends the evidence context for advisory analysis
-4. validates the response as structured JSON
-5. automatically tries another currently available NVIDIA model if the selected model fails
-6. keeps the deterministic diagnosis as the authoritative result if NVIDIA is unavailable
+3. sends the deterministic evidence context for reasoning
+4. validates and normalizes the response into a bounded JSON contract
+5. produces root-cause hypotheses linked to evidence
+6. produces a recommended fix and fix-confidence level
+7. produces a verification plan instead of claiming the fix was applied
+8. automatically tries another currently available NVIDIA model if the selected model fails
+9. keeps the deterministic diagnosis active if NVIDIA is unavailable
+
+The AI report contains:
+
+- Summary
+- Root-Cause Hypotheses
+- Recommended Fix
+- Verification Plan
+- Evidence References
+- Warnings
+- Selected model and backup model
+- AI confidence and fix confidence
+
+The action does not automatically modify the customer's source code based on an AI recommendation.
 
 Enable it with:
 
@@ -148,7 +169,7 @@ NVIDIA's free API access is intended for prototyping, testing, and evaluation an
 | Input | Default | Purpose |
 | --- | --- | --- |
 | `comment-on-pr` | `true` | Add/update the diagnosis PR comment when applicable. |
-| `ai-analysis` | `true` | Run optional NVIDIA AI when `NVIDIA_API_KEY` is configured. |
+| `ai-analysis` | `true` | Run the primary enhanced NVIDIA AI analysis when `NVIDIA_API_KEY` is configured. |
 | `report-destination` | `auto` | Choose `auto`, `repo`, or `none` for repository report persistence. |
 | `report-path` | `.ci-detective/reports/ci-detective-report.md` | Repository-relative Markdown report path. |
 
@@ -156,10 +177,10 @@ NVIDIA's free API access is intended for prototyping, testing, and evaluation an
 
 | Output | Description |
 | --- | --- |
-| `diagnosis` | Versioned JSON payload containing all failed jobs. |
+| `diagnosis` | Versioned JSON payload containing all failed jobs and deterministic evidence. |
 | `confidence` | Primary deterministic diagnosis confidence. |
 | `schema_version` | Current diagnosis schema version (`1.0`). |
-| `ai_diagnosis` | Advisory NVIDIA AI JSON payload when available. |
+| `ai_diagnosis` | Primary enhanced NVIDIA AI JSON payload when available, including fix and verification recommendations. |
 | `ai_model` | NVIDIA model selected after live availability checks. |
 | `ai_status` | NVIDIA AI status. |
 | `report_path` | Generated report path. |
@@ -172,6 +193,7 @@ Example:
 - name: Read diagnosis
   run: |
     echo "Confidence: ${{ steps.detective.outputs.confidence }}"
+    echo "AI status: ${{ steps.detective.outputs.ai_status }}"
     echo "Report: ${{ steps.detective.outputs.report_url }}"
 ```
 
@@ -189,7 +211,7 @@ CI Detective currently has deterministic handling for common signals including:
 - timeouts
 - likely regressions based on available Git and traceback evidence
 
-The exact diagnosis depends on the evidence available in the failed workflow. When evidence is insufficient, CI Detective explicitly reports uncertainty instead of inventing a root cause.
+The exact diagnosis depends on the evidence available in the failed workflow. When evidence is insufficient, CI Detective explicitly reports uncertainty instead of inventing a root cause. The same evidence constraint applies to AI recommendations.
 
 ## Architecture
 
@@ -202,32 +224,38 @@ Failed GitHub Actions job(s)
           +----> isolated logs + tests + traceback + Git history
           |
           v
-   Evidence-based report
+   Authoritative evidence
+          |
+          +----> NVIDIA AI enhanced reasoning (when enabled)
+          |            |
+          |            +----> root-cause hypotheses
+          |            +----> recommended fix
+          |            +----> verification plan
+          |            +----> evidence-linked warnings
+          |            +----> live model discovery
+          |            +----> same-API fallback
+          |
+          v
+     Unified Markdown report
           |
           +----> PR comment
-          |
-          +----> Markdown report
-          |          |
-          |          +----> repository (when permitted)
-          |          +----> Actions artifact fallback
-          |
-          +----> optional NVIDIA AI advisory layer
-                       |
-                       +----> live model discovery
-                       +----> capability-based selection
-                       +----> same-API fallback
+          +----> repository (when permitted)
+          +----> Actions artifact fallback
+          +----> machine-readable outputs
 ```
 
 ## Design principles
 
 1. Evidence before inference.
-2. Deterministic analysis first.
-3. AI is optional, advisory, and replaceable.
-4. Never claim causation from correlation alone.
-5. Never invent files, tests, commits, causes, or fixes.
-6. Keep CI diagnosis functional when external AI is unavailable.
-7. Request the minimum GitHub permissions needed for each delivery mode.
-8. Produce both human-readable and machine-readable results.
+2. Deterministic analysis establishes the authoritative evidence contract.
+3. NVIDIA AI is the primary enhanced reasoning layer when configured.
+4. AI is optional at the product boundary, non-fatal, and replaceable.
+5. Never claim causation from correlation alone.
+6. Never invent files, tests, commits, causes, fixes, or completed changes.
+7. Recommendations must be accompanied by a verification plan.
+8. Keep CI diagnosis functional when external AI is unavailable.
+9. Request the minimum GitHub permissions needed for each delivery mode.
+10. Produce both human-readable and machine-readable results.
 
 ## Security and permissions
 
@@ -242,6 +270,8 @@ See [SECURITY.md](SECURITY.md) for the project's security policy.
 ## Reliability model
 
 A failed AI request does not make the CI diagnosis fail. The deterministic result is still emitted, and the report delivery path falls back when repository writes are unavailable.
+
+NVIDIA model selection is dynamic: CI Detective checks the live catalog on each AI analysis instead of assuming that a particular model will always be available.
 
 Regression detection is deliberately conservative: a changed file may correlate with a failure, but CI Detective does not present that correlation as proof that the file caused the failure.
 
@@ -259,6 +289,10 @@ Use `contents: write` on the diagnostic job and set `report-destination: repo`. 
 
 Verify that `NVIDIA_API_KEY` is configured as a repository or organization secret. NVIDIA model availability and rate limits can change. Deterministic diagnosis does not require the key.
 
+### The AI recommendation is uncertain
+
+Review the Evidence References and Warnings in the report. A low fix confidence means the supplied evidence is not strong enough to present the recommendation as a high-confidence resolution. Run the Verification Plan before treating the recommendation as confirmed.
+
 ### The diagnosis says evidence is insufficient
 
 That is an intentional safety behavior. Inspect the failed job's logs and rerun with full repository history (`fetch-depth: 0`) so Git-based evidence is available.
@@ -275,4 +309,4 @@ CI Detective is released under the [MIT License](LICENSE).
 
 ## Project status
 
-CI Detective is an actively developed GitHub Action. The deterministic analyzer is the core product; NVIDIA AI is an optional enhancement layer. Pin versions in production workflows and review release notes before upgrading.
+CI Detective is an actively developed GitHub Action. The deterministic analyzer is the authoritative evidence engine; NVIDIA AI is the primary enhanced reasoning layer when configured. Pin versions in production workflows and review release notes before upgrading.
