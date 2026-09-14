@@ -1,0 +1,40 @@
+name: Consumer Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  intentional-failure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Intentional failure
+        run: exit 1
+
+  detective:
+    if: ${{ failure() }}
+    needs: intentional-failure
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: SamoTech/CI-Detective@v0.1.0
+        id: detective
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Validate outputs
+        env:
+          DIAGNOSIS: ${{ steps.detective.outputs.diagnosis }}
+          CONFIDENCE: ${{ steps.detective.outputs.confidence }}
+          SCHEMA_VERSION: ${{ steps.detective.outputs.schema_version }}
+        run: |
+          test -n "$DIAGNOSIS"
+          test -n "$CONFIDENCE"
+          test "$SCHEMA_VERSION" = "1.0"
+          echo "$DIAGNOSIS" | python -m json.tool
