@@ -7,6 +7,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 BASE_URL = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").rstrip("/")
@@ -180,17 +181,22 @@ def render_ai_report(result: dict[str, Any]) -> str:
 
 def _context_from_environment() -> str:
     explicit = os.environ.get("CI_DETECTIVE_AI_CONTEXT", "")
+    report_file = os.environ.get("CI_DETECTIVE_REPORT_FILE", "")
+    report = ""
+    if report_file:
+        try:
+            report = Path(report_file).read_text(encoding="utf-8")
+        except OSError:
+            pass
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     summary = ""
     if summary_path:
         try:
-            with open(summary_path, encoding="utf-8") as handle:
-                summary = handle.read()
+            summary = Path(summary_path).read_text(encoding="utf-8")
         except OSError:
             pass
-    if explicit and summary:
-        return explicit + "\n\nFull deterministic report:\n" + summary
-    return explicit or summary
+    parts = [x for x in (explicit, report, summary) if x]
+    return "\n\n".join(parts)
 
 
 def main() -> int:
@@ -205,6 +211,12 @@ def main() -> int:
         result = analyse_with_fallback(context)
         report = render_ai_report(result)
         print(report)
+        shared_file = os.environ.get("CI_DETECTIVE_REPORT_FILE")
+        if shared_file:
+            path = Path(shared_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(report)
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
             with open(summary, "a", encoding="utf-8") as handle:
