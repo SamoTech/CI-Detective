@@ -224,20 +224,36 @@ def render_ai_report(result: dict[str, Any]) -> str:
 def _context_from_environment() -> str:
     explicit = os.environ.get("CI_DETECTIVE_AI_CONTEXT", "")
     report_file = os.environ.get("CI_DETECTIVE_REPORT_FILE", "")
-    report = ""
+    parts: list[str] = []
+
+    # Central monitor passes a path to the deterministic JSON context. Load the
+    # file contents rather than sending the path itself to the model.
+    if explicit:
+        explicit_path = Path(explicit)
+        if explicit_path.is_file():
+            try:
+                parts.append(explicit_path.read_text(encoding="utf-8"))
+            except OSError:
+                pass
+        else:
+            parts.append(explicit)
+
     if report_file:
         try:
             report = Path(report_file).read_text(encoding="utf-8")
+            if report:
+                parts.append(report)
         except OSError:
             pass
+
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-    summary = ""
     if summary_path:
         try:
             summary = Path(summary_path).read_text(encoding="utf-8")
+            if summary:
+                parts.append(summary)
         except OSError:
             pass
-    parts = [x for x in (explicit, report, summary) if x]
     return "\n\n".join(parts)
 
 
