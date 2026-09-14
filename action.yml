@@ -11,10 +11,22 @@ inputs:
     required: false
     default: 'true'
 
+outputs:
+  diagnosis:
+    description: Versioned JSON diagnosis payload containing all failed jobs.
+    value: ${{ steps.detect.outputs.diagnosis }}
+  confidence:
+    description: Confidence of the primary diagnosis.
+    value: ${{ steps.detect.outputs.confidence }}
+  schema_version:
+    description: Diagnosis JSON schema version.
+    value: ${{ steps.detect.outputs.schema_version }}
+
 runs:
   using: composite
   steps:
     - name: Run CI Detective
+      id: detect
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
