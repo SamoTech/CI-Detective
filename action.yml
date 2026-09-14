@@ -62,6 +62,20 @@ runs:
         GH_TOKEN: ${{ github.token }}
         INPUT_COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
       run: python3 "${{ github.action_path }}/src/ci_detective.py"
+    - name: Stage deterministic Markdown report
+      if: ${{ always() }}
+      shell: bash
+      env:
+        REPORT_FILE: ${{ github.workspace }}/.ci-detective/reports/ci-detective-report.md
+      run: |
+        mkdir -p "$(dirname "$REPORT_FILE")"
+        if [ -f "$GITHUB_STEP_SUMMARY" ] && grep -q "CI Detective" "$GITHUB_STEP_SUMMARY"; then
+          cp "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+        else
+          printf '%s\n' '## CI Detective — Failure Diagnosis' > "$REPORT_FILE"
+          printf '%s\n' '' >> "$REPORT_FILE"
+          printf '%s\n' 'The deterministic report was generated but the runner summary file was unavailable.' >> "$REPORT_FILE"
+        fi
     - name: Run optional NVIDIA AI analysis
       id: ai
       if: ${{ inputs.ai-analysis == 'true' }}
@@ -69,6 +83,7 @@ runs:
       env:
         NVIDIA_API_KEY: ${{ env.NVIDIA_API_KEY }}
         CI_DETECTIVE_AI_CONTEXT: ${{ steps.detect.outputs.diagnosis }}
+        CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/.ci-detective/reports/ci-detective-report.md
       run: python3 "${{ github.action_path }}/src/nvidia_ai.py"
     - name: Publish customer Markdown report
       id: publish
@@ -78,6 +93,7 @@ runs:
         GH_TOKEN: ${{ github.token }}
         INPUT_REPORT_DESTINATION: ${{ inputs.report-destination }}
         INPUT_REPORT_PATH: ${{ inputs.report-path }}
+        CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/.ci-detective/reports/ci-detective-report.md
       run: python3 "${{ github.action_path }}/src/publish_report.py"
     - name: Upload customer Markdown report artifact
       if: ${{ always() }}
