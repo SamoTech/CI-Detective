@@ -19,7 +19,8 @@ jobs:
       contents: read
     env:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      GH_TOKEN: ${{ github.token }}
+      CENTRAL_GITHUB_TOKEN: ${{ secrets.CENTRAL_GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.CENTRAL_GITHUB_TOKEN || github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
