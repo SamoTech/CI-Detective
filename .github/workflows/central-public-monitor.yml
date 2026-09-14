@@ -2,6 +2,8 @@ name: CI Detective Central Public Monitor
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '*/15 * * * *'
 
 jobs:
   monitor:
@@ -9,13 +11,21 @@ jobs:
     environment: NVIDIA-CENTRAL
     permissions:
       contents: read
+    env:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      TARGET_REPO: SamoTech/RepoSource-Registry
     steps:
       - uses: actions/checkout@v4
-      - name: Check central monitor POC
-        env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      - name: Poll public repository
+        shell: bash
         run: |
-          python3 - <<'PY'
-          print('Central public monitor POC is active')
-          print('NVIDIA key configured:', bool(__import__('os').environ.get('NVIDIA_API_KEY')))
-          PY
+          set -euo pipefail
+          gh api "repos/${TARGET_REPO}/actions/runs?status=failure&per_page=1" > run.json
+          jq '{id:.workflow_runs[0].id,url:.workflow_runs[0].html_url,created_at:.workflow_runs[0].created_at}' run.json | tee central-monitor-run.json
+          test "$(jq -r '.workflow_runs|length' run.json)" -gt 0
+      - name: Validate central NVIDIA secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${NVIDIA_API_KEY:-}"
+          echo 'Central NVIDIA secret is available without adding it to the customer repository.'
