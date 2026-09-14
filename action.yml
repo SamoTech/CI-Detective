@@ -14,6 +14,14 @@ inputs:
     description: Enable optional NVIDIA free-model AI analysis when NVIDIA_API_KEY is configured.
     required: false
     default: 'true'
+  report-destination:
+    description: 'Report persistence mode: auto, repo, or none. Auto publishes to the customer repository when the token has Contents write permission and otherwise keeps the report in the run artifact/summary.'
+    required: false
+    default: 'auto'
+  report-path:
+    description: Path for the customer-facing Markdown report in the customer repository.
+    required: false
+    default: '.ci-detective/reports/ci-detective-report.md'
 
 outputs:
   diagnosis:
@@ -34,6 +42,15 @@ outputs:
   ai_status:
     description: 'NVIDIA AI status: success or unavailable.'
     value: ${{ steps.ai.outputs.ai_status }}
+  report_path:
+    description: Repository-relative path of the generated Markdown report.
+    value: ${{ steps.publish.outputs.report_path }}
+  report_url:
+    description: Direct GitHub URL to the Markdown report, or the workflow run URL when repository publishing is unavailable.
+    value: ${{ steps.publish.outputs.report_url }}
+  report_status:
+    description: 'Report persistence status: repo or artifact.'
+    value: ${{ steps.publish.outputs.report_status }}
 
 runs:
   using: composite
@@ -53,3 +70,20 @@ runs:
         NVIDIA_API_KEY: ${{ env.NVIDIA_API_KEY }}
         CI_DETECTIVE_AI_CONTEXT: ${{ steps.detect.outputs.diagnosis }}
       run: python3 "${{ github.action_path }}/src/nvidia_ai.py"
+    - name: Publish customer Markdown report
+      id: publish
+      if: ${{ always() }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_REPORT_DESTINATION: ${{ inputs.report-destination }}
+        INPUT_REPORT_PATH: ${{ inputs.report-path }}
+      run: python3 "${{ github.action_path }}/src/publish_report.py"
+    - name: Upload customer Markdown report artifact
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ci-detective-report-${{ github.run_id }}
+        path: ${{ github.workspace }}/${{ inputs.report-path }}
+        if-no-files-found: ignore
+        retention-days: 14
