@@ -2,6 +2,25 @@
 
 All notable changes to CI Detective are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Optional NVIDIA AI enhancement using live model availability checks.
+- Capability-based NVIDIA free-model selection for coding/reasoning workloads.
+- Same-API model fallback when the selected NVIDIA model is unavailable or fails.
+- Advisory AI output that never overrides the deterministic diagnosis.
+- Customer-facing Markdown report generation and delivery.
+- Repository report publication when `contents: write` is explicitly available.
+- GitHub Actions artifact fallback when repository publication is unavailable.
+- Report-related Action outputs: `report_path`, `report_url`, and `report_status`.
+- Expanded user documentation covering setup, permissions, reports, AI configuration, outputs, troubleshooting, and security.
+
+### Reliability
+
+- NVIDIA availability or request failures do not break deterministic CI diagnosis.
+- Report persistence failures remain non-fatal and preserve the workflow fallback path.
+
 ## [0.1.0] - 2026-09-14
 
 ### Added
