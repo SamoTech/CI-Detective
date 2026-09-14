@@ -2,10 +2,6 @@ name: CI Detective Central Public Monitor
 
 on:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - feat/central-public-monitor-poc
   schedule:
     - cron: '*/15 * * * *'
 
@@ -18,18 +14,55 @@ jobs:
     env:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       TARGET_REPO: SamoTech/RepoSource-Registry
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
-      - name: Poll public repository
+        with:
+          fetch-depth: 0
+      - name: Poll public failed runs
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${TARGET_REPO}/actions/runs?status=failure&per_page=1" > run.json
-          jq '{id:.workflow_runs[0].id,url:.workflow_runs[0].html_url,created_at:.workflow_runs[0].created_at}' run.json | tee central-monitor-run.json
-          test "$(jq -r '.workflow_runs|length' run.json)" -gt 0
-      - name: Validate central NVIDIA secret
+          gh api "repos/${TARGET_REPO}/actions/runs?status=failure&per_page=5" > runs.json
+          jq -r '.workflow_runs[] | [.id,.name,.html_url,.created_at,.head_sha] | @tsv' runs.json | tee failed-runs.tsv
+          test "$(jq -r '.total_count' runs.json)" -gt 0
+      - name: Analyze latest failed run
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${NVIDIA_API_KEY:-}"
-          echo 'Central NVIDIA secret is available without adding it to the customer repository.'
+          run_id="$(jq -r '.workflow_runs[0].id' runs.json)"
+          run_url="$(jq -r '.workflow_runs[0].html_url' runs.json)"
+          gh api "repos/${TARGET_REPO}/actions/runs/${run_id}/jobs?per_page=100" > jobs.json
+          : > report.md
+          printf '%s\n\n' '# CI Detective — Central Public Repository Report' >> report.md
+          printf '%s\n' "**Repository:** \`${TARGET_REPO}\`  " "**Workflow run:** [${run_id}](${run_url})" >> report.md
+          failed="$(jq -r '[.jobs[] | select(.conclusion == "failure") | .id] | .[]' jobs.json)"
+          test -n "$failed"
+          for job_id in $failed; do
+            job_name="$(jq -r ".jobs[] | select(.id == ${job_id}) | .name" jobs.json)"
+            log_file="job-${job_id}.log"
+            gh api "repos/${TARGET_REPO}/actions/jobs/${job_id}/logs" > "$log_file" || true
+            printf '%s\n' "" "## Failed Job: \`${job_name}\`" >> report.md
+            if grep -qiE 'TypeError|AssertionError|ModuleNotFoundError|ImportError|ReferenceError|SyntaxError|npm ERR!|command not found|permission denied|out of memory|timed out' "$log_file"; then
+              grep -iE 'TypeError|AssertionError|ModuleNotFoundError|ImportError|ReferenceError|SyntaxError|npm ERR!|command not found|permission denied|out of memory|timed out' "$log_file" | head -8 | sed 's/^/- /' >> report.md
+            else
+              echo '- Failure log retrieved; no supported deterministic pattern matched.' >> report.md
+            fi
+          done
+          printf '%s\n' '' '---' 'Central monitor uses the NVIDIA key only from the CI Detective NVIDIA-CENTRAL environment; it is never written to the customer repository.' >> report.md
+      - name: NVIDIA enhanced analysis
+        if: ${{ env.NVIDIA_API_KEY != '' }}
+        env:
+          CI_DETECTIVE_AI_CONTEXT: ${{ github.workspace }}/report.md
+          CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/report.md
+          GITHUB_STEP_SUMMARY: ${{ github.workspace }}/report.md
+        shell: bash
+        run: python3 src/nvidia_ai.py
+      - name: Publish central report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-detective-central-report-${{ github.run_id }}
+          path: report.md
+          if-no-files-found: warn
+          retention-days: 14
