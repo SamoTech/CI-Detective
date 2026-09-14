@@ -58,9 +58,8 @@ def extract_traceback_files(log_text: str) -> list[str]:
     return found[:10]
 
 def infer_root_cause(text: str, category: str) -> tuple[str,str,str]:
-    lower=text.lower()
     if category == "TYPE_ERROR":
-        m=re.search(r"([\w.]+)\(\)\s+missing\s+(\d+)\s+required positional argument[s]?:\s*['\"]([^'\"]+)",text,re.I)
+        m=re.search(r"([\w.]+)\(\)\s+missing\s+(\d+)\s+required positional argument[s]?:\s*['\"]([^'\"]+)['\"]",text,re.I)
         if m:
             symbol=m.group(1); arg=m.group(3)
             return (f"The call to {symbol} is missing required argument '{arg}'. The failure is consistent with a caller/signature mismatch.",symbol,"high")
@@ -70,7 +69,9 @@ def infer_root_cause(text: str, category: str) -> tuple[str,str,str]:
         m=re.search(r"AssertionError:\s*(.+)",text,re.I)
         if m: return (f"The assertion failed because {m.group(1).strip()[:300]}","","high")
     if category == "IMPORT_FAILURE":
-        m=re.search(r"(?:No module named|Cannot find module)\s+['\"]?([^'\"\\s]+)",text,re.I)
+        m=re.search(r"No module named\s+['\"]([^'\"]+)['\"]",text,re.I)
+        if not m:
+            m=re.search(r"Cannot find module\s+['\"]([^'\"]+)['\"]",text,re.I)
         if m: return (f"The runtime cannot resolve dependency/module '{m.group(1)}'.",m.group(1),"high")
     return ("The available evidence identifies the failure class, but not a unique root cause.","","low")
 
