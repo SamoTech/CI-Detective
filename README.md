@@ -8,11 +8,12 @@ Deterministic CI failure diagnosis with no paid AI dependency. The engine extrac
 
 ## Use in a workflow
 
+Keep read permissions at workflow scope and grant write permissions only to the detective job:
+
 ```yaml
 permissions:
   contents: read
   actions: read
-  issues: write
 
 jobs:
   test:
@@ -22,15 +23,28 @@ jobs:
   detect:
     if: ${{ failure() }}
     needs: test
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: SamoTech/CI-Detective@main
         env:
           GH_TOKEN: ${{ github.token }}
 ```
 
 When the workflow runs in Pull Request context, CI Detective adds or updates a single PR comment using a hidden marker, preventing duplicate comments. Set `comment-on-pr: 'false'` to disable PR comments.
+
+For forked pull requests and other workflows where GitHub downgrades the available token permissions, PR comment creation or updates may be unavailable. Diagnosis in the job summary and JSON outputs should be treated as the primary result in those cases.
+
+## Action outputs
+
+The Action exposes a versioned `diagnosis` JSON payload containing every failed job, plus `confidence` and `schema_version` for the primary diagnosis. The current payload schema version is `1.0`.
 
 ## What it detects
 
@@ -42,7 +56,7 @@ When the workflow runs in Pull Request context, CI Detective adds or updates a s
 - permission failures
 - resource exhaustion
 - timeouts
-- likely regressions based on traceback files and changed files
+- regression signals based on traceback files and changed files; a changed-file match is correlation evidence, not proof of causation
 
 ## Design principles
 
