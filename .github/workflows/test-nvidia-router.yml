@@ -2,67 +2,59 @@ name: NVIDIA Free Router Test
 
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
-  intentional-failure:
+  nvidia-router:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'SamoTech') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment: NVIDIA-CENTRAL
     steps:
-      - uses: actions/checkout@v4
-      - name: Emit representative CI failure
-        shell: bash
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Create deterministic JSON context fixture
         run: |
           python3 - <<'PY'
-          def add_values(left, right):
-              return left + right
-          add_values("text", 1)
+          import json
+          payload = {
+              "schema_version": "1.0",
+              "repository": "SamoTech/CI-Detective",
+              "workflow_run_id": "nvidia-router-fixture",
+              "failed_jobs": [{
+                  "job": "fixture-type-error",
+                  "category": "TYPE_ERROR",
+                  "summary": "A string and integer were combined without conversion.",
+                  "confidence": "high",
+                  "evidence": ["TypeError: can only concatenate str (not \"int\") to str"],
+                  "failing_tests": ["test_fixture_type_error"],
+                  "traceback_files": ["src/example.py"],
+                  "logs_captured": True,
+                  "long_evidence": "x" * 1024
+              }]
+          }
+          with open("ai-context.json", "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, separators=(",", ":"))
           PY
 
-  detect:
-    if: ${{ failure() }}
-    needs: intentional-failure
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-      issues: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Run CI Detective with NVIDIA free routing
-        id: detective
-        uses: ./
+      - name: Run NVIDIA free-model routing
+        id: ai
         env:
-          GH_TOKEN: ${{ github.token }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-        with:
-          ai-analysis: 'true'
-          comment-on-pr: 'false'
-      - name: Validate deterministic and AI outputs
-        env:
-          DIAGNOSIS: ${{ steps.detective.outputs.diagnosis }}
-          AI_STATUS: ${{ steps.detective.outputs.ai_status }}
-          AI_MODEL: ${{ steps.detective.outputs.ai_model }}
+          CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/ai-report.md
         run: |
-          test -n "$DIAGNOSIS"
-          python3 - <<'PY'
-          import json, os
-          payload = json.loads(os.environ["DIAGNOSIS"])
-          assert payload["schema_version"] == "1.0"
-          assert payload["failed_jobs"]
-          assert payload["failed_jobs"][0]["category"] == "TYPE_ERROR"
-          print("deterministic diagnosis: valid")
-          print("ai_status:", os.environ.get("AI_STATUS"))
-          print("ai_model:", os.environ.get("AI_MODEL"))
-          if os.environ.get("AI_STATUS") == "success":
-              assert os.environ.get("AI_MODEL")
-              print("NVIDIA free-model routing: active")
-          else:
-              print("NVIDIA free-model routing: unavailable; deterministic fallback preserved")
-          PY
+          export CI_DETECTIVE_AI_CONTEXT="$(cat ai-context.json)"
+          python3 src/nvidia_ai.py
 
+      - name: Validate live NVIDIA analysis
+        env:
+          AI_STATUS: ${{ steps.ai.outputs.ai_status }}
+          AI_MODEL: ${{ steps.ai.outputs.ai_model }}
+        run: |
+          test "$AI_STATUS" = "success"
+          test -n "$AI_MODEL"
+          grep -q "PRIMARY ENHANCED ANALYSIS" ai-report.md
+          echo "NVIDIA free-model routing and enhanced report: passed"
