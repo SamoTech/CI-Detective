@@ -224,20 +224,39 @@ def render_ai_report(result: dict[str, Any]) -> str:
 def _context_from_environment() -> str:
     explicit = os.environ.get("CI_DETECTIVE_AI_CONTEXT", "")
     report_file = os.environ.get("CI_DETECTIVE_REPORT_FILE", "")
-    report = ""
+    parts: list[str] = []
+
+    # Accept either a JSON/text payload or a path to a context file. Do not
+    # call Path.is_file() on arbitrary JSON: long payloads can raise ENAMETOOLONG.
+    if explicit:
+        if explicit.lstrip().startswith(("{", "[")):
+            parts.append(explicit)
+        else:
+            try:
+                explicit_path = Path(explicit)
+                if explicit_path.is_file():
+                    parts.append(explicit_path.read_text(encoding="utf-8"))
+                else:
+                    parts.append(explicit)
+            except (OSError, ValueError):
+                parts.append(explicit)
+
     if report_file:
         try:
             report = Path(report_file).read_text(encoding="utf-8")
+            if report:
+                parts.append(report)
         except OSError:
             pass
+
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-    summary = ""
     if summary_path:
         try:
             summary = Path(summary_path).read_text(encoding="utf-8")
+            if summary:
+                parts.append(summary)
         except OSError:
             pass
-    parts = [x for x in (explicit, report, summary) if x]
     return "\n\n".join(parts)
 
 
