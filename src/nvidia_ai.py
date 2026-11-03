@@ -226,17 +226,20 @@ def _context_from_environment() -> str:
     report_file = os.environ.get("CI_DETECTIVE_REPORT_FILE", "")
     parts: list[str] = []
 
-    # Central monitor passes a path to the deterministic JSON context. Load the
-    # file contents rather than sending the path itself to the model.
+    # Accept either a JSON/text payload or a path to a context file. Do not
+    # call Path.is_file() on arbitrary JSON: long payloads can raise ENAMETOOLONG.
     if explicit:
-        explicit_path = Path(explicit)
-        if explicit_path.is_file():
-            try:
-                parts.append(explicit_path.read_text(encoding="utf-8"))
-            except OSError:
-                pass
-        else:
+        if explicit.lstrip().startswith(("{", "[")):
             parts.append(explicit)
+        else:
+            try:
+                explicit_path = Path(explicit)
+                if explicit_path.is_file():
+                    parts.append(explicit_path.read_text(encoding="utf-8"))
+                else:
+                    parts.append(explicit)
+            except (OSError, ValueError):
+                parts.append(explicit)
 
     if report_file:
         try:
