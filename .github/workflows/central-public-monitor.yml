@@ -11,25 +11,86 @@ env:
   LOOKBACK_MINUTES: '360'
   MAX_FAILED_JOBS: '8'
 
+concurrency:
+  group: ci-detective-central-monitor
+  cancel-in-progress: false
+
 jobs:
-  monitor:
+  pr-validation:
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate deterministic monitor fixture
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from src.ci_detective import classify_failure
+
+          log_text = """Traceback (most recent call last):
+            File "src/example.py", line 12, in run
+              value = "text" + 1
+          TypeError: can only concatenate str (not "int") to str
+          """
+          diagnosis = classify_failure(log_text)
+          assert diagnosis.category == "TYPE_ERROR", diagnosis.category
+          payload = {
+              "schema_version": "1.0",
+              "repository": "SamoTech/RepoSource-Registry",
+              "workflow_run_id": "pull-request-fixture",
+              "failed_jobs": [{
+                  "job": "fixture-type-error",
+                  "category": diagnosis.category,
+                  "summary": diagnosis.summary,
+                  "confidence": diagnosis.confidence,
+                  "evidence": diagnosis.evidence,
+                  "failing_tests": diagnosis.failing_tests,
+                  "traceback_files": diagnosis.traceback_files,
+                  "logs_captured": True,
+              }],
+          }
+          Path("ai-context.json").write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+          Path("report.md").write_text(
+              "## CI Detective — Central Monitor PR Fixture\n\n"
+              f"**Category:** `{diagnosis.category}`\n\n{diagnosis.summary}\n",
+              encoding="utf-8",
+          )
+          print("Central monitor deterministic fixture: passed")
+          PY
+
+      - name: Upload PR fixture report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-detective-pr-fixture-${{ github.run_id }}
+          path: report.md
+          if-no-files-found: error
+          retention-days: 7
+
+  live-monitor:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
     environment: NVIDIA-CENTRAL
     permissions:
       contents: read
-    env:
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      CENTRAL_GITHUB_TOKEN: ${{ secrets.CENTRAL_GITHUB_TOKEN }}
-      GH_TOKEN: ${{ secrets.CENTRAL_GITHUB_TOKEN || github.token }}
+      actions: read
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Poll latest public failure
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Poll latest unprocessed public failure
+        id: poll
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.CENTRAL_GITHUB_TOKEN || github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/${TARGET_REPO}/actions/runs?status=failure&per_page=20" > runs.json
+          gh api "repos/${TARGET_REPO}/actions/runs?status=failure&per_page=100" > runs.json
           python3 - <<'PY'
           import json, os, subprocess
           from datetime import datetime, timedelta, timezone
@@ -39,7 +100,7 @@ jobs:
           from src.ci_detective import classify_failure
 
           repo = os.environ['TARGET_REPO']
-          lookback = int(os.environ.get('LOOKBACK_MINUTES', '120'))
+          lookback = int(os.environ.get('LOOKBACK_MINUTES', '360'))
           max_failed_jobs = int(os.environ.get('MAX_FAILED_JOBS', '8'))
           token = os.environ.get('GH_TOKEN', '')
           runs = json.loads(Path('runs.json').read_text()).get('workflow_runs', [])
@@ -49,6 +110,32 @@ jobs:
               if not value:
                   return None
               return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+          def fetch_processed_run_ids():
+              current_repo = os.environ['GITHUB_REPOSITORY']
+              api_url = f'https://api.github.com/repos/{current_repo}/actions/artifacts?per_page=100'
+              headers = {
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  'X-GitHub-Api-Version': '2022-11-28',
+              }
+              try:
+                  with urlopen(Request(api_url, headers=headers), timeout=30) as response:
+                      artifacts = json.loads(response.read().decode('utf-8')).get('artifacts', [])
+              except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+                  print('Warning: could not read processed-run markers; deduplication is temporarily unavailable.')
+                  return set()
+              processed = set()
+              prefix = 'ci-detective-processed-'
+              for artifact in artifacts:
+                  name = artifact.get('name', '')
+                  if artifact.get('expired') or not name.startswith(prefix):
+                      continue
+                  try:
+                      processed.add(int(name[len(prefix):]))
+                  except ValueError:
+                      continue
+              return processed
 
           def fetch_job_log(repo_name, job_id):
               urls = [
@@ -71,19 +158,34 @@ jobs:
                       continue
               return ''
 
-          recent = [r for r in runs if parse_time(r.get('updated_at') or r.get('created_at')) and parse_time(r.get('updated_at') or r.get('created_at')) >= cutoff]
-          if not recent:
+          recent = [
+              run for run in runs
+              if parse_time(run.get('updated_at') or run.get('created_at'))
+              and parse_time(run.get('updated_at') or run.get('created_at')) >= cutoff
+          ]
+          recent.sort(key=lambda run: parse_time(run.get('updated_at') or run.get('created_at')), reverse=True)
+          processed_ids = fetch_processed_run_ids()
+          unprocessed = [run for run in recent if int(run['id']) not in processed_ids]
+
+          if not unprocessed:
               Path('report.md').write_text(
                   '## CI Detective — Central Public Repository Report\n\n'
                   f'**Repository:** `{repo}`  \n**Window:** last {lookback} minutes  \n\n'
-                  'No failed workflow run was found in the configured monitoring window.\n',
+                  'No unprocessed failed workflow run was found in the configured monitoring window.\n',
                   encoding='utf-8',
               )
-              Path('ai-context.json').write_text(json.dumps({'schema_version':'1.0','repository':repo,'failed_jobs':[]}), encoding='utf-8')
+              Path('ai-context.json').write_text(
+                  json.dumps({'schema_version': '1.0', 'repository': repo, 'failed_jobs': []}),
+                  encoding='utf-8',
+              )
               Path('recent-failure').write_text('false', encoding='utf-8')
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                  output.write('recent_failure=false\n')
+                  output.write('has_failed_jobs=false\n')
+                  output.write('target_run_id=none\n')
               raise SystemExit(0)
 
-          run = recent[0]
+          run = unprocessed[0]
           jobs = json.loads(subprocess.check_output([
               'gh', 'api', f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100"
           ], text=True)).get('jobs', [])
@@ -91,39 +193,39 @@ jobs:
               '## CI Detective — Central Public Repository Report', '',
               f"**Repository:** `{repo}`  ",
               f"**Run:** [{run['id']}]({run['html_url']})  ",
-              f"**Commit:** `{run.get('head_sha','')}`  ",
+              f"**Commit:** `{run.get('head_sha', '')}`  ",
               f"**Monitoring window:** last {lookback} minutes", ''
           ]
           all_items = []
-          failed_jobs = [j for j in jobs if j.get('conclusion') == 'failure'][:max_failed_jobs]
+          failed_jobs = [job for job in jobs if job.get('conclusion') == 'failure'][:max_failed_jobs]
           for job in failed_jobs:
               log_text = fetch_job_log(repo, job['id'])
-              d = classify_failure(log_text)
+              diagnosis = classify_failure(log_text)
               item = {
                   'job': job.get('name', 'unknown'),
                   'job_id': job['id'],
-                  'category': d.category,
-                  'summary': d.summary,
-                  'confidence': d.confidence,
-                  'evidence': d.evidence,
-                  'failing_tests': d.failing_tests,
-                  'traceback_files': d.traceback_files,
+                  'category': diagnosis.category,
+                  'summary': diagnosis.summary,
+                  'confidence': diagnosis.confidence,
+                  'evidence': diagnosis.evidence,
+                  'failing_tests': diagnosis.failing_tests,
+                  'traceback_files': diagnosis.traceback_files,
                   'logs_captured': bool(log_text.strip()),
               }
               all_items.append(item)
               out += [
                   f"### Failed Job: `{item['job']}`", '',
-                  f"**Category:** `{d.category}`  ",
-                  f"**Confidence:** **{d.confidence.upper()}**  ",
+                  f"**Category:** `{diagnosis.category}`  ",
+                  f"**Confidence:** **{diagnosis.confidence.upper()}**  ",
                   f"**Logs captured:** **{'YES' if log_text.strip() else 'NO'}**", '',
-                  d.summary,
+                  diagnosis.summary,
               ]
-              if d.evidence:
-                  out += ['', '#### Evidence'] + [f'- {x}' for x in d.evidence]
-              if d.failing_tests:
-                  out += ['', '#### Failing Tests'] + [f'- {x}' for x in d.failing_tests]
-              if d.traceback_files:
-                  out += ['', '#### Traceback Files'] + [f'- {x}' for x in d.traceback_files]
+              if diagnosis.evidence:
+                  out += ['', '#### Evidence'] + [f'- {value}' for value in diagnosis.evidence]
+              if diagnosis.failing_tests:
+                  out += ['', '#### Failing Tests'] + [f'- {value}' for value in diagnosis.failing_tests]
+              if diagnosis.traceback_files:
+                  out += ['', '#### Traceback Files'] + [f'- {value}' for value in diagnosis.traceback_files]
 
           payload = {
               'schema_version': '1.0',
@@ -140,19 +242,35 @@ jobs:
           )
           Path('ai-context.json').write_text(json.dumps(payload, separators=(',', ':')), encoding='utf-8')
           Path('recent-failure').write_text('true', encoding='utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('recent_failure=true\n')
+              output.write(f"has_failed_jobs={str(bool(all_items)).lower()}\n")
+              output.write(f"target_run_id={run['id']}\n")
           PY
+
       - name: NVIDIA enhanced analysis
-        if: ${{ env.NVIDIA_API_KEY != '' && hashFiles('recent-failure') != '' }}
+        if: ${{ steps.poll.outputs.has_failed_jobs == 'true' }}
         env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           CI_DETECTIVE_AI_CONTEXT: ${{ github.workspace }}/ai-context.json
           CI_DETECTIVE_REPORT_FILE: ${{ github.workspace }}/report.md
         shell: bash
         run: python3 src/nvidia_ai.py
+
       - name: Upload central report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ci-detective-central-report-${{ github.run_id }}
           path: report.md
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Mark target run as processed
+        if: ${{ steps.poll.outputs.recent_failure == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-detective-processed-${{ steps.poll.outputs.target_run_id }}
+          path: recent-failure
+          if-no-files-found: error
           retention-days: 14
